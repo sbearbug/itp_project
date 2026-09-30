@@ -5,7 +5,7 @@
 - **目标**：用最小成本跑通"截图 → 识别 → 确认 → 写入系统日历"，并与手机厂商自带功能（荣耀 YOYO 等）做同题对比。
 - **不是正式产品**：只装在组内手机上测试，不对外分发。
 - **不做**：用户账号、服务器、数据库、推送服务、iOS、微信分享入口。
-- **平台**：Android App；另提供仅监听本机的本地网页体验包。
+- **平台**：Android App 是主要产物；另提供仅监听本机的本地网页辅助体验包。
 
 ## 1. 技术栈
 
@@ -89,6 +89,9 @@ campus-demo/
  * @throws {Error}               网络失败或返回无法解析时抛出，message 为中文说明
  */
 export async function extractEvents(imageDataUrl, now)
+
+/** 从粘贴的通知文字提取，返回值与图片提取完全一致 */
+export async function extractEventsFromText(text, now)
 ```
 
 实现要点：
@@ -96,6 +99,8 @@ export async function extractEvents(imageDataUrl, now)
 - 系统提示词要求：只输出 JSON 数组；把当前日期和星期告诉模型，用来推算相对日期；拿不准的字段填 `null` 并写进 `uncertain`；一张图有多个活动时拆成多条。
 - 解析时容错：去掉 ```json 包裹，找到第一个 `[` 到最后一个 `]` 再 `JSON.parse`。
 - 发送前把图片压缩到长边不超过 1600px，节省费用和时间。
+- 文字入口复用同一套 system prompt、请求、容错解析和 Event 归一化；
+  user 消息改为纯文字，不附带 `image_url`。
 
 ### store.js
 
@@ -195,8 +200,13 @@ export async function addToCalendar(event)     // → Promise<void>
 
 ### 添加页与编辑页
 
-- 添加页顶部为返回按钮和“添加活动”，主体先显示大尺寸选图区域。选图后在本页
-  完成缩略图、阶段指示条、骨架屏、慢速提示、取消、超时和重试流程。
+- 添加页顶部为返回按钮和“添加活动”，空闲态上下显示两个入口：
+  上方选择通知截图，下方可粘贴群消息、公众号正文或邮件文字。图片选择框
+  按下时在 160ms 内轻微缩小、收紧阴影并变暗，提供明确的物理按压反馈；
+  `prefers-reduced-motion` 下只改变透明度。
+- 选图后在本页完成缩略图、阶段指示条、骨架屏、慢速提示、取消、超时和
+  重试流程；文字入口跳过图片压缩，从“整理文字 → 上传 → 识别中 → 完成”
+  阶段开始。两者均进入相同的 `pending_events` 待确认流程。
 - 识别完成后在添加页逐条显示可编辑活动卡片；保存当前活动后处理下一条，全部保存
   后返回列表页，新条目淡入。
 - 识别成功和从列表恢复的待确认活动均显示“放弃”按钮。放弃只移除当前待确认项，
@@ -279,6 +289,10 @@ export async function addToCalendar(event)     // → Promise<void>
   `campus-demo-local.zip`。ZIP 根目录直接包含 `dist/`、`server.py`、
   空的 `config.json` 模板、两个启动文件和《使用说明.txt》，并保留 `start.command`
   的 Unix 可执行权限。
+- 正式 Demo 产物更新使用 `npm run release:demo`：先用原生构建配置生成
+  主产物 `campus-demo-android.apk`，再显式清空前端 Key 构建辅助产物
+  `campus-demo-local.zip`。这个顺序保证两份产物来自同一份源码，同时网页包
+  不会携带 Android Demo 的内置 Key。
 
 ## 7. 分工建议
 

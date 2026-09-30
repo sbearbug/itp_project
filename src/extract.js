@@ -39,7 +39,7 @@ export async function compressImage(file, maxEdge = 1600) {
   return canvas.toDataURL('image/jpeg', 0.86);
 }
 
-export async function extractEvents(imageDataUrl, now = new Date()) {
+async function requestExtraction(userContent, now, sourceLabel) {
   const native = isNative();
   const { apiBase, model, apiKey } = native
     ? await getApiConfig()
@@ -53,7 +53,7 @@ export async function extractEvents(imageDataUrl, now = new Date()) {
 
   const systemPrompt = [
     '你是校园通知信息提取助手。当前本地时间是：' + localNow + '。',
-    '读取用户截图，提取其中所有独立活动，只输出 JSON 数组，不要输出解释或 Markdown。',
+    `读取用户提供的${sourceLabel}，提取其中所有独立活动，只输出 JSON 数组，不要输出解释或 Markdown。`,
     '每项严格使用以下结构：',
     '{"title":"活动名称","start":"YYYY-MM-DDTHH:mm 或 null","end":"YYYY-MM-DDTHH:mm 或 null","allDay":false,"location":"地点或 null","deadline":"YYYY-MM-DDTHH:mm 或 null","signup":"报名方式、链接或二维码说明，或 null","description":"按指定模板总结","uncertain":["不确定的字段名"]}',
     '',
@@ -72,13 +72,7 @@ export async function extractEvents(imageDataUrl, now = new Date()) {
     temperature: 0.1,
     messages: [
       { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: '请提取这张校园通知截图中的活动。' },
-          { type: 'image_url', image_url: { url: imageDataUrl } }
-        ]
-      }
+      { role: 'user', content: userContent }
     ]
   });
 
@@ -137,4 +131,17 @@ export async function extractEvents(imageDataUrl, now = new Date()) {
     window.addEventListener('campus:cancel-extraction', cancel, { once: true });
     request.send(requestBody);
   });
+}
+
+export async function extractEvents(imageDataUrl, now = new Date()) {
+  return requestExtraction([
+    { type: 'text', text: '请提取这张校园通知截图中的活动。' },
+    { type: 'image_url', image_url: { url: imageDataUrl } }
+  ], now, '校园通知截图');
+}
+
+export async function extractEventsFromText(text, now = new Date()) {
+  const content = String(text || '').trim();
+  if (!content) throw new Error('请先输入通知文字');
+  return requestExtraction(`请从以下校园通知文字中提取活动：\n\n${content}`, now, '校园通知文字');
 }

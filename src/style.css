@@ -72,12 +72,27 @@ body.settings-open #app { transform: translateX(min(84vw, 360px)); }
 .secondary-header h1 { margin: 0; text-align: center; font-family: Georgia, "Songti SC", serif; font-size: 24px; }
 .secondary-content { padding-bottom: 18px; }
 .add-picker { display: grid; place-items: center; align-content: center; min-height: min(66vh, 560px); }
-.add-picker__button { display: flex; align-items: center; justify-content: center; gap: 17px; width: 100%; min-height: 190px; padding: 26px; border: 1px solid rgba(255,255,255,.5); border-radius: 28px; color: #fff; background: var(--green); box-shadow: 0 18px 40px rgba(31,101,71,.18); cursor: pointer; }
+.add-picker__button { display: flex; align-items: center; justify-content: center; gap: 17px; width: 100%; min-height: 170px; padding: 26px; border: 1px solid rgba(255,255,255,.5); border-radius: 28px; color: #fff; background: var(--green); box-shadow: 0 18px 40px rgba(31,101,71,.18); cursor: pointer; transform: scale(1); transition: transform 160ms ease-out, box-shadow 160ms ease-out, filter 160ms ease-out; -webkit-tap-highlight-color: transparent; }
+.add-picker__button:active { transform: scale(.975); box-shadow: 0 8px 20px rgba(31,101,71,.16); filter: brightness(.96); }
+.add-picker__button:focus-within { outline: 3px solid rgba(31,101,71,.22); outline-offset: 3px; }
 .add-picker__button .capture-button__icon { width: 60px; height: 60px; }
 .add-picker__button strong, .add-picker__button small { display: block; }
 .add-picker__button strong { margin-bottom: 6px; font-size: 20px; }
 .add-picker__button small { color: rgba(255,255,255,.7); }
 .add-picker > p { margin: 14px 0 0; color: var(--muted); font-size: 11px; }
+.add-methods { align-content: start; gap: 14px; min-height: 0; }
+.add-methods > p { margin-top: 0; text-align: center; }
+.text-extract-card { display: grid; gap: 13px; width: 100%; padding: 20px; border: 1px solid var(--line); border-radius: 28px; background: rgba(255,253,247,.9); box-shadow: 0 12px 34px rgba(42,48,43,.06); }
+.text-extract-card__heading { display: flex; align-items: center; gap: 12px; }
+.text-extract-card__heading strong, .text-extract-card__heading small { display: block; }
+.text-extract-card__heading strong { margin-bottom: 4px; font-size: 17px; }
+.text-extract-card__heading small { color: var(--muted); font-size: 11px; }
+.text-preview-icon { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; border-radius: 14px; color: var(--green); background: #e3eee7; font-family: Georgia, "Songti SC", serif; font-size: 17px; font-weight: 800; }
+.text-extract-card textarea { width: 100%; min-height: 118px; resize: vertical; padding: 13px 14px; border: 1px solid var(--line); border-radius: 16px; outline: 0; color: var(--ink); background: #fffdf7; line-height: 1.6; transition: border-color 160ms ease-out, box-shadow 160ms ease-out; }
+.text-extract-card textarea:focus { border-color: rgba(31,101,71,.55); box-shadow: 0 0 0 3px rgba(31,101,71,.1); }
+.text-extract-card .button { min-height: 46px; }
+.preview-card--text .text-preview-icon { width: 68px; height: 68px; border-radius: 11px; font-size: 22px; }
+.preview-card--text small { display: -webkit-box; max-width: 420px; overflow: hidden; white-space: normal; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .recognition-panel { animation: fade-in 180ms ease-out both; }
 .recognition-panel .preview-card { margin-bottom: 2px; }
 .preview-card label { margin-left: auto; padding: 8px; color: var(--green); font-size: 12px; font-weight: 750; cursor: pointer; }
@@ -302,6 +317,8 @@ body.settings-open .settings-drawer { transform: translateX(0); }
   .settings-scrim { transition-duration: 150ms; }
   .fab { transition-property: opacity; }
   .fab--hidden { transform: none; }
+  .add-picker__button { transition-property: opacity, filter; }
+  .add-picker__button:active { opacity: .86; transform: none; }
 }
 @media (max-width: 460px) {
   .time-grid { grid-template-columns: 1fr; }

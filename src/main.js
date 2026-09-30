@@ -3,7 +3,7 @@ import { App as CapacitorApp } from '@capacitor/app';
 import { SplashScreen } from '@capacitor/splash-screen';
 import { Preferences } from '@capacitor/preferences';
 import { isNative } from './platform.js';
-import { extractEvents, compressImage } from './extract.js';
+import { extractEvents, extractEventsFromText, compressImage } from './extract.js';
 import { addToCalendar } from './calendar.js';
 import {
   API_BASE,
@@ -52,6 +52,8 @@ const ui = {
   slow: false,
   statusTextIndex: 0,
   selectedFile: null,
+  selectedText: '',
+  recognitionSource: 'image',
   previewUrl: '',
   compressedImage: '',
   startedAt: 0,
@@ -534,7 +536,7 @@ async function handleBack() {
   const route = parseRoute();
   if (route.name === 'add') {
     if (WORKING_STATES.includes(ui.recognitionStatus)) {
-      if (!await confirmAction('当前图片仍在识别，返回后将终止本次识别。', { title: '放弃本次识别？', confirmLabel: '放弃', danger: true })) return;
+      if (!await confirmAction('当前通知仍在识别，返回后将终止本次识别。', { title: '放弃本次识别？', confirmLabel: '放弃', danger: true })) return;
       cancelRecognition();
     }
     await navigateBackToList();
@@ -1004,7 +1006,9 @@ function setRecognitionStatus(status, patch = {}) {
 }
 
 function stageIndicator() {
-  const labels = ['压缩图片', '上传', '识别中', '完成'];
+  const labels = ui.recognitionSource === 'text'
+    ? ['整理文字', '上传', '识别中', '完成']
+    : ['压缩图片', '上传', '识别中', '完成'];
   const stage = ui.recognitionStatus === 'error' ? ui.errorStage : ui.recognitionStatus;
   const activeIndex = Math.max(0, STAGE_STATES.indexOf(stage));
   return `<ol class="stage-indicator" aria-label="识别进度">
@@ -1034,16 +1038,19 @@ function recognitionPanel() {
   const statusText = ui.recognitionStatus === 'compressing'
     ? '正在压缩图片…'
     : ui.recognitionStatus === 'uploading'
-      ? '正在上传图片…'
+      ? `正在上传${ui.recognitionSource === 'text' ? '文字' : '图片'}…`
       : STATUS_MESSAGES[ui.statusTextIndex];
 
   return `<section class="recognition-panel">
-    <input id="replace-image-input" data-image-input class="visually-hidden" type="file" accept="image/*">
-    <div class="preview-card">
-      <img src="${escapeHtml(ui.previewUrl)}" alt="所选通知截图缩略图">
-      <div><strong>${escapeHtml(ui.selectedFile?.name || '所选截图')}</strong><small>请确认截图内容正确</small></div>
-      <label for="replace-image-input">更换</label>
-    </div>
+    ${ui.recognitionSource === 'image' ? `<input id="replace-image-input" data-image-input class="visually-hidden" type="file" accept="image/*">
+      <div class="preview-card">
+        <img src="${escapeHtml(ui.previewUrl)}" alt="所选通知截图缩略图">
+        <div><strong>${escapeHtml(ui.selectedFile?.name || '所选截图')}</strong><small>请确认截图内容正确</small></div>
+        <label for="replace-image-input">更换</label>
+      </div>` : `<div class="preview-card preview-card--text">
+        <span class="text-preview-icon">文</span>
+        <div><strong>文字通知</strong><small>${escapeHtml(ui.selectedText.slice(0, 80))}</small></div>
+      </div>`}
     ${stageIndicator()}
     ${isWorking ? `${skeletonCard()}
       <div class="recognition-status">
@@ -1057,14 +1064,19 @@ function recognitionPanel() {
   </section>`;
 }
 
-function selectImagePanel() {
-  return `<section class="add-picker">
+function selectInputPanel() {
+  return `<section class="add-picker add-methods">
     <input id="add-image-input" data-image-input class="visually-hidden" type="file" accept="image/*">
     <label class="add-picker__button" for="add-image-input">
       <span class="capture-button__icon">＋</span>
       <span><strong>选择通知截图</strong><small>支持海报、群聊和公众号截图</small></span>
     </label>
-    <p>图片只用于识别本次活动信息</p>
+    <form class="text-extract-card" id="text-extract-form">
+      <div class="text-extract-card__heading"><span class="text-preview-icon">文</span><div><strong>粘贴通知文字</strong><small>适合群消息、公众号正文或邮件</small></div></div>
+      <textarea name="noticeText" maxlength="10000" placeholder="在这里粘贴活动通知内容…" aria-label="活动通知文字"></textarea>
+      <button class="button button--primary" type="submit">从文字提取</button>
+    </form>
+    <p>图片和文字只用于识别本次活动信息</p>
   </section>`;
 }
 
@@ -1303,7 +1315,7 @@ async function renderAddPage() {
       ${draft
         ? eventFormMarkup(draft, { mode: 'add', index: draftIndex, total: relatedDrafts.length || 1 })
         : ui.recognitionStatus === 'idle'
-          ? selectImagePanel()
+          ? selectInputPanel()
           : recognitionPanel()}
     </div>
     ${toastMarkup()}
@@ -1311,14 +1323,18 @@ async function renderAddPage() {
 
   document.querySelector('#back-button').addEventListener('click', async () => {
     if (WORKING_STATES.includes(ui.recognitionStatus)) {
-      if (!await confirmAction('当前图片仍在识别，返回后将终止本次识别。', { title: '放弃本次识别？', confirmLabel: '放弃', danger: true })) return;
+      if (!await confirmAction('当前通知仍在识别，返回后将终止本次识别。', { title: '放弃本次识别？', confirmLabel: '放弃', danger: true })) return;
       cancelRecognition();
     }
     await navigateBackToList();
   });
   bindImageInputs();
+  bindTextInput();
   document.querySelector('#cancel-recognition')?.addEventListener('click', cancelRecognition);
-  document.querySelector('#retry-recognition')?.addEventListener('click', () => startRecognition(ui.selectedFile, false));
+  document.querySelector('#retry-recognition')?.addEventListener('click', () => {
+    if (ui.recognitionSource === 'text') void startTextRecognition(ui.selectedText);
+    else void startRecognition(ui.selectedFile, false);
+  });
   if (draft) bindEventForm(draft, { mode: 'add' });
 }
 
@@ -1346,6 +1362,19 @@ function bindImageInputs() {
   });
 }
 
+function bindTextInput() {
+  document.querySelector('#text-extract-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const text = String(new FormData(event.currentTarget).get('noticeText') || '').trim();
+    if (!text) {
+      event.currentTarget.querySelector('textarea')?.focus();
+      showToast('请先粘贴通知文字');
+      return;
+    }
+    await startTextRecognition(text);
+  });
+}
+
 async function handleImage(inputEvent) {
   const file = inputEvent.target.files?.[0];
   if (!file) return;
@@ -1363,6 +1392,8 @@ async function startRecognition(file, replacePreview) {
     ui.previewUrl = URL.createObjectURL(file);
   }
   ui.selectedFile = file;
+  ui.selectedText = '';
+  ui.recognitionSource = 'image';
   ui.activeDraftId = null;
   setRecognitionStatus('compressing', {
     error: '',
@@ -1379,21 +1410,7 @@ async function startRecognition(file, replacePreview) {
     const extracted = await extractEvents(imageDataUrl, new Date());
     if (runId !== recognitionRunId) return;
 
-    const drafts = extracted.map((item) => ({
-      ...item,
-      id: makeId(),
-      status: 'interested',
-      createdAt: new Date().toISOString()
-    }));
-    await addPendingEvents(drafts);
-    await refresh();
-    document.querySelector('.skeleton-card')?.classList.add('skeleton-card--leaving');
-    await wait(180);
-    ui.activeDraftId = drafts[0]?.id || null;
-    setRecognitionStatus('done', {
-      resultIds: drafts.map((event) => event.id),
-      slow: false
-    });
+    await storeExtractionResults(extracted, runId);
   } catch (error) {
     if (runId !== recognitionRunId || ui.recognitionStatus === 'error') return;
     setRecognitionStatus('error', {
@@ -1401,6 +1418,62 @@ async function startRecognition(file, replacePreview) {
       slow: false
     });
   }
+}
+
+async function startTextRecognition(text) {
+  const content = String(text || '').trim();
+  if (!content) return;
+  if (WORKING_STATES.includes(ui.recognitionStatus)) {
+    window.dispatchEvent(new Event('campus:cancel-extraction'));
+  }
+  const runId = ++recognitionRunId;
+  if (ui.previewUrl) {
+    URL.revokeObjectURL(ui.previewUrl);
+    ui.previewUrl = '';
+  }
+  ui.selectedFile = null;
+  ui.selectedText = content;
+  ui.recognitionSource = 'text';
+  ui.activeDraftId = null;
+  setRecognitionStatus('uploading', {
+    error: '',
+    slow: false,
+    startedAt: Date.now(),
+    statusTextIndex: 0,
+    resultIds: []
+  });
+
+  try {
+    const extracted = await extractEventsFromText(content, new Date());
+    if (runId !== recognitionRunId) return;
+    await storeExtractionResults(extracted, runId);
+  } catch (error) {
+    if (runId !== recognitionRunId || ui.recognitionStatus === 'error') return;
+    setRecognitionStatus('error', {
+      error: error.message || '识别失败，请重试',
+      slow: false
+    });
+  }
+}
+
+async function storeExtractionResults(extracted, runId) {
+  if (runId !== recognitionRunId) return;
+  const drafts = extracted.map((item) => ({
+    ...item,
+    id: makeId(),
+    status: 'interested',
+    createdAt: new Date().toISOString()
+  }));
+  await addPendingEvents(drafts);
+  await refresh();
+  document.querySelector('.skeleton-card')?.classList.add('skeleton-card--leaving');
+  await wait(180);
+  if (runId !== recognitionRunId) return;
+  ui.activeDraftId = drafts[0]?.id || null;
+  setRecognitionStatus('done', {
+    resultIds: drafts.map((event) => event.id),
+    slow: false
+  });
 }
 
 function cancelRecognition() {

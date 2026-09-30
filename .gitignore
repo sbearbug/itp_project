@@ -10,3 +10,4 @@ android/app/build/
 .DS_Store
 .local-package/
 campus-demo-local.zip
+campus-demo-android.apk

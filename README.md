@@ -1,6 +1,15 @@
 # 校园活动助手 Demo
 
-从校园通知截图中提取活动信息，人工确认后调起 Android 系统日历。
+从校园通知截图或粘贴的通知文字中提取活动信息，人工确认后加入日历。
+
+Android APK 是 Demo 的主要产物，本地网页 ZIP 只用于没有 Android
+设备的组员辅助体验。同步构建两份产物：
+
+```bash
+npm run release:demo
+```
+
+生成项目根目录的 `campus-demo-android.apk`和 `campus-demo-local.zip`。
 
 ## 本地预览
 
