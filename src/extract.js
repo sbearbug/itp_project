@@ -1,0 +1,136 @@
+import { getApiConfig } from './config.js';
+
+const DESCRIPTION_TEMPLATE = '活动：{title}\n时间：{start} 至 {end}\n地点：{location}\n报名截止：{deadline}\n报名方式：{signup}';
+
+function parseJsonArray(content) {
+  const cleaned = content.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+  const start = cleaned.indexOf('[');
+  const end = cleaned.lastIndexOf(']');
+  if (start < 0 || end <= start) throw new Error('模型没有返回活动列表');
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+function normalizeEvent(raw) {
+  const allowedUncertain = ['title', 'start', 'end', 'location', 'deadline', 'signup', 'description'];
+  return {
+    title: typeof raw.title === 'string' ? raw.title.trim() : '',
+    start: typeof raw.start === 'string' && raw.start ? raw.start : null,
+    end: typeof raw.end === 'string' && raw.end ? raw.end : null,
+    allDay: Boolean(raw.allDay),
+    location: typeof raw.location === 'string' && raw.location ? raw.location.trim() : null,
+    deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : null,
+    signup: typeof raw.signup === 'string' && raw.signup ? raw.signup.trim() : null,
+    description: typeof raw.description === 'string' && raw.description ? raw.description.trim() : null,
+    uncertain: Array.isArray(raw.uncertain)
+      ? [...new Set(raw.uncertain.filter((field) => allowedUncertain.includes(field)))]
+      : []
+  };
+}
+
+export async function compressImage(file, maxEdge = 1600) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvas.toDataURL('image/jpeg', 0.86);
+}
+
+export async function extractEvents(imageDataUrl, now = new Date()) {
+  const { apiBase, model, apiKey } = await getApiConfig();
+  if (!apiKey) throw new Error('未配置 API Key，请在左侧设置中填写或检查项目根目录的 .env.local');
+
+  const localNow = new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'full',
+    timeStyle: 'short'
+  }).format(now);
+
+  const systemPrompt = [
+    '你是校园通知信息提取助手。当前本地时间是：' + localNow + '。',
+    '读取用户截图，提取其中所有独立活动，只输出 JSON 数组，不要输出解释或 Markdown。',
+    '每项严格使用以下结构：',
+    '{"title":"活动名称","start":"YYYY-MM-DDTHH:mm 或 null","end":"YYYY-MM-DDTHH:mm 或 null","allDay":false,"location":"地点或 null","deadline":"YYYY-MM-DDTHH:mm 或 null","signup":"报名方式、链接或二维码说明，或 null","description":"按指定模板总结","uncertain":["不确定的字段名"]}',
+    '',
+    '规则：',
+    '1. 一张图有多个活动时拆成多项。',
+    '2. 根据当前日期推算“今晚”“下周三”等相对日期。',
+    '3. 只有明确日期、没有具体钟点时，start 使用当天 00:00，end 使用次日 00:00，allDay=true。',
+    '4. 任何拿不准的字段填 null，并把字段名写进 uncertain；禁止猜测。',
+    '5. description 必须严格按此模板生成，缺失值写“未提供”：',
+    DESCRIPTION_TEMPLATE,
+    '6. description 中只总结截图明确提供的信息，不添加建议。'
+  ].join('\n');
+
+  const requestBody = JSON.stringify({
+    model,
+    temperature: 0.1,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '请提取这张校园通知截图中的活动。' },
+          { type: 'image_url', image_url: { url: imageDataUrl } }
+        ]
+      }
+    ]
+  });
+
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const cancel = () => request.abort();
+    const cleanup = () => window.removeEventListener('campus:cancel-extraction', cancel);
+
+    request.open('POST', apiBase + '/chat/completions');
+    request.timeout = 60_000;
+    request.setRequestHeader('Content-Type', 'application/json');
+    request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
+
+    request.upload.addEventListener('load', () => {
+      window.dispatchEvent(new CustomEvent('campus:extract-stage', { detail: 'recognizing' }));
+    }, { once: true });
+
+    request.addEventListener('load', () => {
+      cleanup();
+      if (request.status < 200 || request.status >= 300) {
+        let detail = '';
+        try {
+          const body = JSON.parse(request.responseText);
+          detail = body?.error?.message ? '：' + body.error.message : '';
+        } catch {
+          // Ignore non-JSON error bodies.
+        }
+        reject(new Error('识别服务返回错误（' + request.status + '）' + detail));
+        return;
+      }
+
+      try {
+        const body = JSON.parse(request.responseText);
+        const extracted = parseJsonArray(body?.choices?.[0]?.message?.content || '');
+        if (!Array.isArray(extracted) || extracted.length === 0) throw new Error('未识别到活动');
+        resolve(extracted.map(normalizeEvent));
+      } catch (error) {
+        reject(error.message === '未识别到活动'
+          ? error
+          : new Error('识别结果格式异常，请重试'));
+      }
+    });
+    request.addEventListener('error', () => {
+      cleanup();
+      reject(new Error('无法连接识别服务，请检查网络后重试'));
+    });
+    request.addEventListener('timeout', () => {
+      cleanup();
+      reject(new Error('识别超过 60 秒，请稍后重试'));
+    });
+    request.addEventListener('abort', () => {
+      cleanup();
+      reject(new Error('已取消识别'));
+    });
+
+    window.addEventListener('campus:cancel-extraction', cancel, { once: true });
+    request.send(requestBody);
+  });
+}

@@ -1,0 +1,19 @@
+{
+  "appId": "com.itp.campusdemo",
+  "appName": "校园活动助手",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "launchFadeOutDuration": 0,
+      "backgroundColor": "#f3f0e6",
+      "androidSplashResourceName": "splash"
+    }
+  }
+}
