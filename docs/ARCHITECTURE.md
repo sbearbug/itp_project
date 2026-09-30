@@ -5,7 +5,7 @@
 - **目标**：用最小成本跑通"截图 → 识别 → 确认 → 写入系统日历"，并与手机厂商自带功能（荣耀 YOYO 等）做同题对比。
 - **不是正式产品**：只装在组内手机上测试，不对外分发。
 - **不做**：用户账号、服务器、数据库、推送服务、iOS、微信分享入口。
-- **平台**：仅 Android。
+- **平台**：Android App；另提供仅监听本机的本地网页体验包。
 
 ## 1. 技术栈
 
@@ -38,8 +38,11 @@ campus-demo/
 │   ├── extract.js     # 调用大模型 API，返回结构化活动
 │   ├── store.js       # 本地读写活动列表
 │   ├── calendar.js    # 调用原生插件写入系统日历
+│   ├── platform.js    # 集中判断 Capacitor 原生/网页平台
 │   ├── config.js      # API 地址、模型名、混淆后的 key
 │   └── style.css
+├── local/                 # 标准库本地服务器、配置和双击启动文件
+├── scripts/package-local.mjs # 构建并生成本地网页版 ZIP
 ├── android/app/src/main/java/com/itp/campusdemo/
 │   ├── MainActivity.java          # 注册插件
 │   └── CalendarIntentPlugin.java  # 写日历原生插件
@@ -237,14 +240,54 @@ export async function addToCalendar(event)     // → Promise<void>
   150–300ms，统一使用 `ease-out`。开启 `prefers-reduced-motion` 时关闭 shimmer
   和位移动画，只保留透明度变化。
 
-## 6. 分工建议
+## 6. 本地网页版
+
+本地网页版与 Android App 共用 `main.js`、`extract.js`、`store.js`、
+`calendar.js` 和全部 UI，不复制业务代码。`platform.js` 只对外导出
+`isNative()`，内部使用 `Capacitor.isNativePlatform()` 作为统一的平台分流点。
+`Event` 数据格式和第 4 节的模块公开接口保持不变。
+
+### 网页运行时
+
+- `@capacitor/preferences` 在网页平台使用其 Web 实现，数据落到同源
+  `localStorage`，活动、待确认队列和每日启动标记均可持久保存。
+- `@capacitor/app` 的 Android 返回键监听和 `@capacitor/splash-screen` 只在
+  `isNative()` 为真时调用，浏览器不触发原生插件。
+- `extractEvents(imageDataUrl, now)` 在原生模式仍直连 DeepSeek；网页模式
+  只请求同源 `POST /api/chat`，不发送 Authorization 头。本地版构建时
+  显式清空 `VITE_DEEPSEEK_API_KEY`，确保 ZIP 内的前端产物不包含 Key。
+- `addToCalendar(event)` 在网页模式下生成并下载 `.ics`。文件使用
+  CRLF，事件时间转为 UTC `Z` 格式，对 iCalendar 特殊字符转义，
+  活动与可选的“【报名截止】”事件都带有提前 1 小时的 `VALARM`。
+- Vite 的 `base` 为 `./`，使静态资源在压缩包目录内使用相对路径。
+
+### 本地服务器与发布包
+
+- `local/server.py` 只使用 Python 3 标准库，只监听 `127.0.0.1`。
+  从 8765 端口开始尝试可用端口，提供 `dist/` 静态文件，并在启动后
+  自动打开默认浏览器。
+- 服务器在未配置 Key 时也会正常启动。网页通过 `GET /api/config/status`
+  检查状态；未配置时显示与 App 风格一致且不可跳过的设置弹窗，再通过
+  同源 `POST /api/config` 把 Key 交给本地服务器。服务器原子写入同目录
+  `config.json`，接口只返回是否已配置，不读回 Key；设置抽屉可随时更新。
+- 本地服务器把 `POST /api/chat` 代理转发到固定的
+  `https://api.deepseek.com/chat/completions`。超时、网络错误和非 JSON
+  上游错误均返回 `{ "error": { "message": "中文说明" } }`。
+- Mac 使用 `start.command`，Windows 使用 `start.bat`；两者先切换到自身
+  目录再启动 Python，避免用户从不同工作目录双击时找不到文件。
+- `npm run package:local` 会先构建前端，然后生成项目根目录的
+  `campus-demo-local.zip`。ZIP 根目录直接包含 `dist/`、`server.py`、
+  空的 `config.json` 模板、两个启动文件和《使用说明.txt》，并保留 `start.command`
+  的 Unix 可执行权限。
+
+## 7. 分工建议
 
 | 负责方 | 任务 |
 |---|---|
 | Sol | 全部代码：`extract.js`、`store.js`、`calendar.js`、`main.js`、页面与样式、`CalendarIntentPlugin.java` |
 | 人工 | 真机测试、识别效果把关、第 7 节对比实验、维护 `docs/AI_LOG.md` |
 
-## 7. 对比实验（demo 的真正目的）
+## 8. 对比实验（demo 的真正目的）
 
 准备 10 条真实校园通知截图（群聊、海报、公众号长文各若干）。每条分别用本 demo 和手机自带助手（YOYO、小艺、小布等，用组员各自的手机）完成"加入日历"，记录：
 

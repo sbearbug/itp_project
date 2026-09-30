@@ -11,7 +11,21 @@ npm install
 npm run dev
 ```
 
-浏览器预览支持活动识别、待确认队列和本地编辑；“加入系统日历”只在 Android App 中可用。
+开发服务器没有 `/api/chat` 代理，如需完整网页体验请使用下方的本地网页版。
+
+## 本地网页版
+
+生成可分发的 ZIP：
+
+```bash
+npm run package:local
+```
+
+产物为项目根目录的 `campus-demo-local.zip`。解压后 Mac 双击
+`start.command`，Windows 双击 `start.bat`。首次打开网页时会自动弹出
+API Key 设置窗口，填写后由本地服务器保存到 `config.json`。服务只监听
+`127.0.0.1`，API Key 不会写入前端文件。网页中的“加入日历”会
+下载 `.ics` 文件供系统日历导入。
 
 ## Android
 

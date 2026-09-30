@@ -1,8 +1,8 @@
 import './style.css';
-import { Capacitor } from '@capacitor/core';
 import { App as CapacitorApp } from '@capacitor/app';
 import { SplashScreen } from '@capacitor/splash-screen';
 import { Preferences } from '@capacitor/preferences';
+import { isNative } from './platform.js';
 import { extractEvents, compressImage } from './extract.js';
 import { addToCalendar } from './calendar.js';
 import {
@@ -135,8 +135,107 @@ const showNotice = (message, options = {}) => appDialog({
   cancelLabel: null
 });
 
+async function getWebApiStatus() {
+  try {
+    const response = await fetch('/api/config/status', { cache: 'no-store' });
+    if (!response.ok) return null;
+    const body = await response.json();
+    return Boolean(body.configured);
+  } catch {
+    return null;
+  }
+}
+
+function openWebApiKeyDialog({ required = false } = {}) {
+  closeActiveDialog?.(false);
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'app-dialog-backdrop';
+    overlay.innerHTML = `<form class="app-dialog api-key-dialog" aria-modal="true" aria-labelledby="api-key-dialog-title">
+      <div class="app-dialog__mark">◆</div>
+      <h2 id="api-key-dialog-title">配置识别 API</h2>
+      <p>API Key 只会发送给本机服务器，并保存在当前文件夹的 <code>config.json</code> 中，不会写入网页代码。</p>
+      <label class="settings-field"><span>DEEPSEEK API KEY</span>
+        <input name="apiKey" type="password" placeholder="sk-..." autocomplete="off" required autofocus>
+        <small>保存后立即可以上传截图识别</small>
+      </label>
+      <div class="api-key-dialog__error" aria-live="polite"></div>
+      <div class="app-dialog__actions">
+        ${required ? '' : '<button class="button button--secondary" type="button" data-api-cancel>取消</button>'}
+        <button class="button button--primary" type="submit" data-api-save>保存并继续</button>
+      </div>
+    </form>`;
+    document.body.appendChild(overlay);
+
+    let finished = false;
+    const finish = (saved) => {
+      if (finished) return;
+      finished = true;
+      closeActiveDialog = null;
+      document.removeEventListener('keydown', onKeyDown);
+      overlay.classList.add('app-dialog-backdrop--leaving');
+      setTimeout(() => {
+        overlay.remove();
+        resolve(saved);
+      }, 180);
+    };
+    const onKeyDown = (event) => {
+      if (!required && event.key === 'Escape') finish(false);
+    };
+    closeActiveDialog = required ? () => {} : finish;
+    document.addEventListener('keydown', onKeyDown);
+    overlay.querySelector('[data-api-cancel]')?.addEventListener('click', () => finish(false));
+    overlay.addEventListener('click', (event) => {
+      if (!required && event.target === overlay) finish(false);
+    });
+    overlay.querySelector('form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const input = overlay.querySelector('[name="apiKey"]');
+      const button = overlay.querySelector('[data-api-save]');
+      const errorRoot = overlay.querySelector('.api-key-dialog__error');
+      const apiKey = input.value.trim();
+      if (!apiKey) {
+        errorRoot.textContent = '请填写 API Key';
+        input.focus();
+        return;
+      }
+      button.disabled = true;
+      button.innerHTML = '<span class="button-spinner"></span>正在保存…';
+      errorRoot.textContent = '';
+      try {
+        const response = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: apiKey })
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body?.error?.message || '本地服务器无法保存设置');
+        finish(true);
+      } catch (error) {
+        input.value = '';
+        errorRoot.textContent = error.message || '保存失败，请重试';
+        button.disabled = false;
+        button.textContent = '保存并继续';
+        input.focus();
+      }
+    });
+    requestAnimationFrame(() => {
+      overlay.classList.add('app-dialog-backdrop--visible');
+      overlay.querySelector('[name="apiKey"]')?.focus();
+    });
+  });
+}
+
+async function ensureWebApiKey() {
+  if (isNative()) return;
+  const configured = await getWebApiStatus();
+  if (configured === false) await openWebApiKeyDialog({ required: true });
+}
+
 async function renderSettingsDrawer() {
-  const custom = await getCustomApiConfig();
+  const native = isNative();
+  const custom = native ? await getCustomApiConfig() : null;
+  const webConfigured = native ? null : await getWebApiStatus();
   if (!settingsRoot) {
     settingsRoot = document.createElement('div');
     settingsRoot.id = 'settings-root';
@@ -148,9 +247,9 @@ async function renderSettingsDrawer() {
       <header class="settings-header">
         <span>SETTINGS</span>
         <h2>识别设置</h2>
-        <p>${custom ? '正在使用你的自定义 API' : '正在使用内置 Demo API'}</p>
+        <p>${native ? (custom ? '正在使用你的自定义 API' : '正在使用内置 Demo API') : (webConfigured ? 'API Key 已保存在本机' : '尚未配置 API Key')}</p>
       </header>
-      <form class="settings-form" id="api-settings-form">
+      ${native ? `<form class="settings-form" id="api-settings-form">
         <label class="settings-field"><span>API 地址</span>
           <input name="apiBase" type="url" inputmode="url" value="${escapeHtml(custom?.apiBase || API_BASE)}" autocomplete="off">
           <small>填写 OpenAI 兼容接口的基础地址</small>
@@ -167,11 +266,14 @@ async function renderSettingsDrawer() {
           <button class="button button--primary" id="save-api-button" type="submit">保存设置</button>
         </div>
       </form>
-      <p class="settings-note">自定义接口需要兼容 <code>/chat/completions</code>，并支持图片输入。</p>
+      <p class="settings-note">自定义接口需要兼容 <code>/chat/completions</code>，并支持图片输入。</p>` : `<div class="settings-form">
+        <p class="settings-note">API Key 由本地 Python 服务器保存，网页不会显示或读回已保存的 Key。</p>
+        <button class="button button--primary" id="web-api-key-button" type="button">${webConfigured ? '更新 API Key' : '填写 API Key'}</button>
+      </div>`}
     </aside>`;
 
   settingsRoot.querySelector('[data-settings-close]').addEventListener('click', closeSettingsDrawer);
-  settingsRoot.querySelector('#api-settings-form').addEventListener('submit', async (event) => {
+  settingsRoot.querySelector('#api-settings-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -196,10 +298,16 @@ async function renderSettingsDrawer() {
     await renderSettingsDrawer();
     showToast('已使用自定义 API');
   });
-  settingsRoot.querySelector('#default-api-button').addEventListener('click', async () => {
+  settingsRoot.querySelector('#default-api-button')?.addEventListener('click', async () => {
     await clearCustomApiConfig();
     await renderSettingsDrawer();
     showToast('已恢复内置 API');
+  });
+  settingsRoot.querySelector('#web-api-key-button')?.addEventListener('click', async () => {
+    closeSettingsDrawer();
+    if (await openWebApiKeyDialog()) {
+      showToast('API Key 已保存');
+    }
   });
 
   const drawer = settingsRoot.querySelector('.settings-drawer');
@@ -312,6 +420,10 @@ function statusLabel(status) {
   return { interested: '感兴趣', registered: '已报名', skipped: '不参加' }[status] || '感兴趣';
 }
 
+function calendarSuccessMessage() {
+  return isNative() ? '已打开系统日历' : '已下载日历文件';
+}
+
 function parseRoute() {
   if (location.hash === '#/add') return { name: 'add' };
   const editMatch = location.hash.match(/^#\/edit\/([^/]+)$/);
@@ -360,7 +472,7 @@ function playLaunchAnimation(full) {
 
 async function bootstrap() {
   app.innerHTML = launchMarkup();
-  if (Capacitor.isNativePlatform()) {
+  if (isNative()) {
     void SplashScreen.hide({ fadeOutDuration: 0 });
   }
 
@@ -383,6 +495,7 @@ async function bootstrap() {
   }
   ui.pageAnimation = 'page--fade-in';
   await renderRoute();
+  await ensureWebApiKey();
   setupSettingsGesture();
   setupAndroidBackButton();
 }
@@ -441,7 +554,7 @@ async function handleBack() {
 }
 
 function setupAndroidBackButton() {
-  if (!Capacitor.isNativePlatform()) return;
+  if (!isNative()) return;
   void CapacitorApp.addListener('backButton', handleBack);
 }
 
@@ -659,7 +772,7 @@ async function createAppReturnWaiter() {
 }
 
 async function openSavedEventInCalendar(event, waitForReturn = false) {
-  const waiter = waitForReturn ? await createAppReturnWaiter() : null;
+  const waiter = waitForReturn && isNative() ? await createAppReturnWaiter() : null;
   try {
     await addToCalendar(event);
     await updateEvent(event.id, { status: 'registered' });
@@ -789,13 +902,13 @@ async function renderListPage() {
       showToast('请先补全活动时间');
       return;
     }
-    setActionBusy('calendar', button, '打开中…');
+    setActionBusy('calendar', button, isNative() ? '打开中…' : '生成中…');
     try {
       await openSavedEventInCalendar(event);
       await refresh();
       ui.actionBusy = null;
       await renderListPage();
-      showToast('已打开系统日历');
+      showToast(calendarSuccessMessage());
     } catch (error) {
       ui.actionBusy = null;
       await renderListPage();
@@ -810,7 +923,10 @@ async function renderListPage() {
       await showNotice(`有 ${missingTime.length} 个活动缺少开始时间，请先补全后再加入日历。`);
       return;
     }
-    if (!await confirmAction(`将依次打开 ${selected.length} 个活动的系统日历页面。每保存一条并返回后，会继续下一条。`, { title: '批量加入日历？', confirmLabel: '开始' })) return;
+    const calendarPrompt = isNative()
+      ? `将依次打开 ${selected.length} 个活动的系统日历页面。每保存一条并返回后，会继续下一条。`
+      : `将为选中的 ${selected.length} 个活动依次下载日历文件。如浏览器询问，请允许下载多个文件。`;
+    if (!await confirmAction(calendarPrompt, { title: '批量加入日历？', confirmLabel: '开始' })) return;
     setActionBusy('calendar', document.querySelector('#bulk-calendar-button'), '处理中…');
     try {
       for (let index = 0; index < selected.length; index += 1) {
@@ -1135,7 +1251,7 @@ function bindEventForm(event, options) {
         await renderEditPage(event.id);
         return;
       }
-      setActionBusy('calendar', button, '正在打开…');
+      setActionBusy('calendar', button, isNative() ? '正在打开…' : '正在生成…');
       try {
         await updateEvent(event.id, patch);
         const saved = { ...event, ...patch };
@@ -1144,7 +1260,7 @@ function bindEventForm(event, options) {
         await refresh();
         ui.actionBusy = null;
         formError = '';
-        showToast('已打开系统日历');
+        showToast(calendarSuccessMessage());
         await navigateBackToList();
       } catch (error) {
         ui.actionBusy = null;

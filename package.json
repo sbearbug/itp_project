@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "package:local": "node scripts/package-local.mjs",
     "preview": "vite preview",
     "cap:sync": "npm run build && cap sync android",
     "apk": "npm run cap:sync && cd android && ./gradlew assembleDebug",

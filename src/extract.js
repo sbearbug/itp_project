@@ -1,4 +1,5 @@
-import { getApiConfig } from './config.js';
+import { getApiConfig, MODEL } from './config.js';
+import { isNative } from './platform.js';
 
 const DESCRIPTION_TEMPLATE = '活动：{title}\n时间：{start} 至 {end}\n地点：{location}\n报名截止：{deadline}\n报名方式：{signup}';
 
@@ -39,8 +40,11 @@ export async function compressImage(file, maxEdge = 1600) {
 }
 
 export async function extractEvents(imageDataUrl, now = new Date()) {
-  const { apiBase, model, apiKey } = await getApiConfig();
-  if (!apiKey) throw new Error('未配置 API Key，请在左侧设置中填写或检查项目根目录的 .env.local');
+  const native = isNative();
+  const { apiBase, model, apiKey } = native
+    ? await getApiConfig()
+    : { apiBase: '', model: MODEL, apiKey: '' };
+  if (native && !apiKey) throw new Error('未配置 API Key，请在左侧设置中填写或检查项目根目录的 .env.local');
 
   const localNow = new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'full',
@@ -83,10 +87,10 @@ export async function extractEvents(imageDataUrl, now = new Date()) {
     const cancel = () => request.abort();
     const cleanup = () => window.removeEventListener('campus:cancel-extraction', cancel);
 
-    request.open('POST', apiBase + '/chat/completions');
+    request.open('POST', native ? apiBase + '/chat/completions' : '/api/chat');
     request.timeout = 60_000;
     request.setRequestHeader('Content-Type', 'application/json');
-    request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
+    if (native) request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
 
     request.upload.addEventListener('load', () => {
       window.dispatchEvent(new CustomEvent('campus:extract-stage', { detail: 'recognizing' }));
