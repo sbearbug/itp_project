@@ -27,7 +27,7 @@ button { color: inherit; transition: transform 150ms ease-out, box-shadow 150ms 
 #app { position: relative; min-height: 100vh; touch-action: pan-y; transition: transform 250ms ease-out, opacity 200ms ease-out; }
 body.settings-open { overflow: hidden; }
 body.settings-open #app { transform: translateX(min(84vw, 360px)); }
-.page { width: min(100%, 680px); min-height: 100vh; margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 20px max(40px, env(safe-area-inset-bottom)); }
+.page { width: min(100%, 680px); min-height: 100vh; margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 20px max(40px, env(safe-area-inset-bottom)); will-change: transform, opacity; }
 .page--fade-in { animation: fade-in 220ms ease-out both; }
 .page--enter-right { animation: page-in-right 250ms ease-out both; }
 .page--exit-right { animation: page-out-right 250ms ease-out both; pointer-events: none; }
@@ -190,7 +190,7 @@ body.settings-open .settings-drawer { transform: translateX(0); }
 .event-card__top { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .event-card__title { min-width: 0; flex: 1; font-size: 17px; font-weight: 750; line-height: 1.3; }
 .event-card__meta { display: block; margin-top: 4px; color: var(--text-2); font-size: 13px; line-height: 1.45; }
-.event-card-actions { position: absolute; z-index: 0; top: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 72px 64px; width: 136px; overflow: hidden; border-radius: 0 19px 19px 0; opacity: 0; background: var(--surface-2); transition: opacity 150ms ease-out; }
+.event-card-actions { position: absolute; z-index: 0; top: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 72px 64px; width: 136px; overflow: hidden; border-radius: 0 19px 19px 0; opacity: 0; background: var(--surface-2); transition: opacity 150ms ease-out; will-change: opacity; }
 .event-card-row--open .event-card-actions, .event-card-row--dragging .event-card-actions { opacity: 1; }
 .event-swipe-action { border: 0; font-size: 12px; font-weight: 750; cursor: pointer; }
 .event-swipe-action--calendar { margin-left: -1px; border-radius: 0 10px 10px 0; color: var(--text); background: var(--surface-2); }
@@ -763,7 +763,10 @@ body.settings-open #app { transform: none; }
 }
 body.settings-open .settings-drawer { transform: translate(-50%, 0); }
 body.settings-closing .settings-drawer { transform: translate(-50%, 100%); }
-.settings-drawer__handle { margin: 0 auto 20px; background: var(--divider); }
+.settings-drawer__handle { margin: 0 auto 20px; background: var(--divider); cursor: grab; touch-action: none; }
+body.settings-dragging .settings-drawer__handle { cursor: grabbing; }
+body.settings-dragging .settings-drawer,
+body.settings-dragging .settings-scrim { transition: none; }
 .settings-header h2 { margin: 0 0 6px; font-size: 24px; font-weight: 680; line-height: 1.25; letter-spacing: -.015em; }
 .settings-header p { color: var(--text-2); font-size: 13px; line-height: 1.5; }
 .settings-header--with-back { display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 8px; margin-left: -10px; }
@@ -843,6 +846,7 @@ button, [role="button"], .add-picker__button, .capture-button {
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
 }
+.event-card { touch-action: pan-y; will-change: transform; }
 button::after, [role="button"]::after, .add-picker__button::after, .capture-button::after {
   content: "";
   position: absolute;
@@ -873,6 +877,7 @@ button:not(:disabled):active, button.is-pressed,
 .settings-menu-item:not(:disabled):active, .settings-menu-item.is-pressed,
 .add-picker__button.is-pressed, .capture-button.is-pressed { scale: .98; }
 .fab:not(:disabled):active, .fab.is-pressed { scale: .94; }
+.is-loading, [aria-busy="true"] { pointer-events: none; }
 .event-card-row--open .event-card:not(:disabled):active,
 .event-card-row--open .event-card.is-pressed { transform: translateX(-136px); }
 

@@ -58,6 +58,10 @@ let settingsRoot = null;
 let settingsGestureInstalled = false;
 let settingsCloseGestureInstalled = false;
 let pressFeedbackInstalled = false;
+let settingsAnimation = null;
+let settingsScrimAnimation = null;
+let activePageAnimation = null;
+let navigationSequence = 0;
 
 const ui = {
   booting: true,
@@ -102,6 +106,46 @@ function wait(duration) {
 
 function nextPaint() {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function clamp(value, minimum = 0, maximum = 1) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function rubberBand(value, minimum, maximum, resistance = 0.22) {
+  if (value < minimum) return minimum + (value - minimum) * resistance;
+  if (value > maximum) return maximum + (value - maximum) * resistance;
+  return value;
+}
+
+function motionEasing(name = '--motion-spring-soft') {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || 'ease-out';
+}
+
+function transformTranslateX(element) {
+  const transform = getComputedStyle(element).transform;
+  if (!transform || transform === 'none') return 0;
+  try {
+    return new DOMMatrixReadOnly(transform).m41;
+  } catch {
+    return 0;
+  }
+}
+
+function capturePointer(element, pointerId) {
+  try {
+    element?.setPointerCapture?.(pointerId);
+  } catch {
+    // The pointer may already have been cancelled by the browser's scroll recognizer.
+  }
+}
+
+function releasePointer(element, pointerId) {
+  try {
+    element?.releasePointerCapture?.(pointerId);
+  } catch {
+    // Releasing an already-cancelled pointer is harmless.
+  }
 }
 
 function appDialog({ title = '请确认', message, confirmLabel = '确认', cancelLabel = '取消', danger = false }) {
@@ -399,41 +443,77 @@ function setupSettingsCloseGesture() {
   if (settingsCloseGestureInstalled || !settingsRoot) return;
   settingsCloseGestureInstalled = true;
   const gestureSurface = settingsRoot;
-  let startX = 0;
-  let startY = 0;
-  let swiping = false;
-  const beginCloseSwipe = (x, y) => {
-    startX = x;
-    startY = y;
-    swiping = true;
-  };
-  const tryCloseWithSwipe = (x, y, event) => {
-    if (!swiping || !ui.settingsOpen) return;
-    const deltaX = x - startX;
-    const deltaY = y - startY;
-    const horizontal = Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
-    if (deltaX > 10 && horizontal && event?.cancelable) event.preventDefault();
-    if (!horizontal || deltaX < 58) return;
-    swiping = false;
-    closeSettingsDrawer();
-  };
-  gestureSurface.addEventListener('touchstart', (event) => {
-    const touch = event.touches[0];
-    if (touch) beginCloseSwipe(touch.clientX, touch.clientY);
-  }, { passive: true });
-  gestureSurface.addEventListener('touchmove', (event) => {
-    const touch = event.touches[0];
-    if (touch) tryCloseWithSwipe(touch.clientX, touch.clientY, event);
-  }, { passive: false });
-  gestureSurface.addEventListener('touchend', () => { swiping = false; }, { passive: true });
-  gestureSurface.addEventListener('touchcancel', () => { swiping = false; }, { passive: true });
+  let gesture = null;
+
   gestureSurface.addEventListener('pointerdown', (event) => {
-    if (event.pointerType === 'mouse') beginCloseSwipe(event.clientX, event.clientY);
+    if (!ui.settingsOpen || !event.isPrimary || event.button > 0) return;
+    const drawer = settingsRoot.querySelector('.settings-drawer');
+    if (!drawer || !(event.target instanceof Element) || !event.target.closest('.settings-drawer')) return;
+    const interactive = event.target.closest('button, input, textarea, select, label');
+    const directSurface = event.target.closest('.settings-drawer__handle');
+    if (interactive || (!directSurface && drawer.scrollTop > 0)) return;
+    gesture = {
+      pointerId: event.pointerId,
+      drawer,
+      startX: event.clientX,
+      startY: event.clientY,
+      startProgress: readSettingsProgress(),
+      directSurface: Boolean(directSurface),
+      dragging: false,
+      samples: [{ y: event.clientY, time: performance.now() }]
+    };
+    cancelSettingsAnimations();
+    capturePointer(drawer, event.pointerId);
   });
-  gestureSurface.addEventListener('pointerup', (event) => {
-    if (event.pointerType === 'mouse') tryCloseWithSwipe(event.clientX, event.clientY, event);
-    swiping = false;
+
+  gestureSurface.addEventListener('pointermove', (event) => {
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+    const horizontal = Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
+    if (!gesture.dragging && horizontal && deltaX > 58) {
+      gesture = null;
+      void closeSettingsDrawer({ velocity: 0.8 });
+      return;
+    }
+    if (!gesture.dragging && Math.abs(deltaY) > 7 && !horizontal
+      && (gesture.directSurface || deltaY > 0)) {
+      gesture.dragging = true;
+      document.body.classList.add('settings-dragging');
+    }
+    if (!gesture.dragging) return;
+    event.preventDefault();
+    const height = Math.max(1, gesture.drawer.getBoundingClientRect().height);
+    const progress = rubberBand(gesture.startProgress - deltaY / height, 0, 1, 0.16);
+    setSettingsProgress(progress);
+    const now = performance.now();
+    gesture.samples.push({ y: event.clientY, time: now });
+    gesture.samples = gesture.samples.filter((sample) => now - sample.time <= 90);
   });
+
+  const finish = (event, cancelled = false) => {
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const current = gesture;
+    gesture = null;
+    releasePointer(current.drawer, event.pointerId);
+    document.body.classList.remove('settings-dragging');
+    if (!current.dragging) return;
+    const finishTime = performance.now();
+    current.samples.push({ y: event.clientY, time: finishTime });
+    current.samples = current.samples.filter((sample) => finishTime - sample.time <= 90);
+    const first = current.samples[0];
+    const last = current.samples[current.samples.length - 1] || first;
+    const velocity = cancelled || last.time === first.time ? 0 : (last.y - first.y) / (last.time - first.time);
+    const progress = readSettingsProgress();
+    const projected = progress - velocity * 0.2;
+    if (!cancelled && (velocity < -0.45 || (velocity <= 0.45 && projected >= 0.52))) {
+      void animateSettingsProgress(1, velocity);
+    } else {
+      void closeSettingsDrawer({ velocity });
+    }
+  };
+  gestureSurface.addEventListener('pointerup', (event) => finish(event));
+  gestureSurface.addEventListener('pointercancel', (event) => finish(event, true));
 }
 
 function setupPressFeedback() {
@@ -446,6 +526,7 @@ function setupPressFeedback() {
     const target = pressed;
     pressed = null;
     if (!target) return;
+    target.classList.remove('is-pressed');
     window.clearTimeout(rippleTimer);
     rippleTimer = window.setTimeout(() => target.classList.remove('ripple-active'), 420);
   };
@@ -458,6 +539,7 @@ function setupPressFeedback() {
     if (!target) return;
     release();
     pressed = target;
+    target.classList.add('is-pressed');
     const bounds = target.getBoundingClientRect();
     target.style.setProperty('--ripple-x', `${event.clientX - bounds.left}px`);
     target.style.setProperty('--ripple-y', `${event.clientY - bounds.top}px`);
@@ -465,27 +547,117 @@ function setupPressFeedback() {
     void target.offsetWidth;
     target.classList.add('ripple-active');
   }, true);
+  document.addEventListener('pointermove', (event) => {
+    if (!pressed || !event.isPrimary) return;
+    const bounds = pressed.getBoundingClientRect();
+    const inside = event.clientX >= bounds.left && event.clientX <= bounds.right
+      && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+    pressed.classList.toggle('is-pressed', inside);
+  }, true);
   document.addEventListener('pointerup', release, true);
   document.addEventListener('pointercancel', release, true);
   window.addEventListener('blur', release);
 }
 
-async function openSettingsDrawer() {
-  if (ui.settingsOpen || closeActiveDialog || document.body.classList.contains('settings-closing')) return;
+function settingsMotionElements() {
+  return {
+    drawer: settingsRoot?.querySelector('.settings-drawer') || null,
+    scrim: settingsRoot?.querySelector('.settings-scrim') || null
+  };
+}
+
+function readSettingsProgress() {
+  const { drawer } = settingsMotionElements();
+  if (!drawer) return 0;
+  const height = Math.max(1, drawer.getBoundingClientRect().height);
+  const transform = getComputedStyle(drawer).transform;
+  if (!transform || transform === 'none') return ui.settingsOpen ? 1 : 0;
+  try {
+    return clamp(1 - new DOMMatrixReadOnly(transform).m42 / height);
+  } catch {
+    return ui.settingsOpen ? 1 : 0;
+  }
+}
+
+function setSettingsProgress(progress) {
+  const { drawer, scrim } = settingsMotionElements();
+  if (!drawer || !scrim) return;
+  const visualProgress = clamp(progress);
+  const height = Math.max(1, drawer.getBoundingClientRect().height);
+  drawer.style.transform = `translate(-50%, ${(1 - visualProgress) * height}px)`;
+  drawer.style.opacity = String(0.82 + visualProgress * 0.18);
+  scrim.style.opacity = String(visualProgress);
+}
+
+function cancelSettingsAnimations() {
+  const progress = readSettingsProgress();
+  settingsAnimation?.cancel();
+  settingsScrimAnimation?.cancel();
+  settingsAnimation = null;
+  settingsScrimAnimation = null;
+  document.body.classList.remove('settings-closing');
+  setSettingsProgress(progress);
+  return progress;
+}
+
+async function animateSettingsProgress(target, velocity = 0) {
+  const { drawer, scrim } = settingsMotionElements();
+  if (!drawer || !scrim) return false;
+  const start = cancelSettingsAnimations();
+  const distance = Math.abs(target - start);
+  if (distance < 0.005) {
+    setSettingsProgress(target);
+    return true;
+  }
+  const height = Math.max(1, drawer.getBoundingClientRect().height);
+  const duration = clamp(Math.round(170 + distance * 150 - Math.min(Math.abs(velocity), 1.5) * 45), 150, 300);
+  const fromTransform = `translate(-50%, ${(1 - start) * height}px)`;
+  const toTransform = `translate(-50%, ${(1 - target) * height}px)`;
+  settingsAnimation = drawer.animate([
+    { transform: fromTransform, opacity: 0.82 + start * 0.18 },
+    { transform: toTransform, opacity: 0.82 + target * 0.18 }
+  ], { duration, easing: motionEasing(), fill: 'forwards' });
+  settingsScrimAnimation = scrim.animate([
+    { opacity: start },
+    { opacity: target }
+  ], { duration: Math.min(duration, 220), easing: motionEasing('--motion-direct'), fill: 'forwards' });
+  try {
+    await settingsAnimation.finished;
+  } catch {
+    return false;
+  }
+  settingsAnimation = null;
+  settingsScrimAnimation = null;
+  drawer.getAnimations().forEach((animation) => animation.cancel());
+  scrim.getAnimations().forEach((animation) => animation.cancel());
+  setSettingsProgress(target);
+  return true;
+}
+
+async function prepareSettingsDrawer(initialProgress = 0) {
+  if (ui.settingsOpen || closeActiveDialog) return false;
   ui.settingsOpen = true;
   ui.settingsView = 'menu';
   document.body.classList.remove('settings-open');
   await renderSettingsDrawer();
   await nextPaint();
   document.body.classList.add('settings-open');
+  setSettingsProgress(initialProgress);
+  return true;
 }
 
-async function closeSettingsDrawer() {
+async function openSettingsDrawer() {
+  if (!await prepareSettingsDrawer(0)) return;
+  await animateSettingsProgress(1);
+}
+
+async function closeSettingsDrawer({ velocity = 0 } = {}) {
   if (!ui.settingsOpen) return;
-  ui.settingsOpen = false;
   document.body.classList.add('settings-closing');
+  const completed = await animateSettingsProgress(0, velocity);
+  if (!completed) return;
+  ui.settingsOpen = false;
   document.body.classList.remove('settings-open');
-  await wait(250);
   document.body.classList.remove('settings-closing');
   settingsRoot?.querySelector('.settings-drawer')?.setAttribute('aria-hidden', 'true');
 }
@@ -493,9 +665,7 @@ async function closeSettingsDrawer() {
 function setupSettingsGesture() {
   if (settingsGestureInstalled) return;
   settingsGestureInstalled = true;
-  let startX = 0;
-  let startY = 0;
-  let tracking = false;
+  let gesture = null;
   let suppressNextClick = false;
 
   const canStart = (target) => {
@@ -504,45 +674,70 @@ function setupSettingsGesture() {
     return !target.closest('.app-dialog, .settings-drawer, .event-card-row--open');
   };
 
-  const begin = (target, x, y) => {
-    tracking = canStart(target);
-    startX = x;
-    startY = y;
-  };
-
-  const tryOpen = (x, y, event) => {
-    if (!tracking || ui.settingsOpen) return;
-    const deltaX = x - startX;
-    const deltaY = y - startY;
-    if (deltaX > 10 && Math.abs(deltaX) > Math.abs(deltaY) * 1.15 && event?.cancelable) {
-      event.preventDefault();
+  document.addEventListener('pointerdown', (event) => {
+    if (!event.isPrimary || event.button > 0 || !canStart(event.target)) return;
+    gesture = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      latestX: event.clientX,
+      preparing: null,
+      ready: false,
+      horizontal: false,
+      samples: [{ x: event.clientX, time: performance.now() }]
+    };
+  });
+  document.addEventListener('pointermove', (event) => {
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    gesture.latestX = event.clientX;
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+    if (!gesture.horizontal && (Math.abs(deltaX) > 9 || Math.abs(deltaY) > 9)) {
+      if (deltaX <= 0 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.15) {
+        gesture = null;
+        return;
+      }
+      gesture.horizontal = true;
     }
-    if (deltaX < 58 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.15) return;
-    tracking = false;
+    if (!gesture.horizontal) return;
+    if (event.cancelable) event.preventDefault();
+    if (!gesture.preparing) {
+      const preparingGesture = gesture;
+      gesture.preparing = prepareSettingsDrawer(0).then((ready) => {
+        if (!ready) return false;
+        preparingGesture.ready = true;
+        const progress = rubberBand((preparingGesture.latestX - preparingGesture.startX) / 220, 0, 1, 0.16);
+        setSettingsProgress(progress);
+        return true;
+      });
+    }
+    if (gesture.ready) setSettingsProgress(rubberBand(deltaX / 220, 0, 1, 0.16));
+    const now = performance.now();
+    gesture.samples.push({ x: event.clientX, time: now });
+    gesture.samples = gesture.samples.filter((sample) => now - sample.time <= 90);
+  }, { passive: false });
+
+  const finish = async (event, cancelled = false) => {
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const current = gesture;
+    gesture = null;
+    if (!current.horizontal || !current.preparing) return;
     suppressNextClick = true;
     setTimeout(() => { suppressNextClick = false; }, 350);
-    void openSettingsDrawer();
+    if (!await current.preparing) return;
+    const finishTime = performance.now();
+    current.samples.push({ x: event.clientX, time: finishTime });
+    current.samples = current.samples.filter((sample) => finishTime - sample.time <= 90);
+    const first = current.samples[0];
+    const last = current.samples[current.samples.length - 1] || first;
+    const velocity = cancelled || last.time === first.time ? 0 : (last.x - first.x) / (last.time - first.time);
+    const progress = readSettingsProgress();
+    const projected = progress + velocity * 0.2;
+    if (!cancelled && (velocity > 0.45 || projected >= 0.42)) await animateSettingsProgress(1, velocity);
+    else await closeSettingsDrawer({ velocity });
   };
-
-  document.addEventListener('touchstart', (event) => {
-    const touch = event.touches[0];
-    if (touch) begin(event.target, touch.clientX, touch.clientY);
-  }, { passive: true });
-  document.addEventListener('touchmove', (event) => {
-    const touch = event.touches[0];
-    if (touch) tryOpen(touch.clientX, touch.clientY, event);
-  }, { passive: false });
-  document.addEventListener('touchend', () => { tracking = false; }, { passive: true });
-  document.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
-
-  document.addEventListener('pointerdown', (event) => {
-    if (event.pointerType === 'mouse') begin(event.target, event.clientX, event.clientY);
-  });
-  document.addEventListener('pointerup', (event) => {
-    if (event.pointerType !== 'mouse') return;
-    tryOpen(event.clientX, event.clientY, event);
-    tracking = false;
-  });
+  document.addEventListener('pointerup', (event) => { void finish(event); });
+  document.addEventListener('pointercancel', (event) => { void finish(event, true); });
   document.addEventListener('click', (event) => {
     if (!suppressNextClick) return;
     suppressNextClick = false;
@@ -663,20 +858,82 @@ function pageClass(extra = '') {
   return `page ${animation} ${extra}`.trim();
 }
 
-function navigateTo(hash, animation = 'page--enter-right') {
-  ui.pageAnimation = animation;
-  if (location.hash === hash) {
-    renderRoute();
+function cancelActivePageAnimation() {
+  if (!activePageAnimation) return;
+  const { animation, page } = activePageAnimation;
+  const computed = getComputedStyle(page);
+  page.style.transform = computed.transform === 'none' ? 'translateX(0)' : computed.transform;
+  page.style.opacity = computed.opacity;
+  animation.cancel();
+  activePageAnimation = null;
+}
+
+async function animatePage(page, target, { duration = 250, easing = motionEasing() } = {}) {
+  if (!page) return false;
+  cancelActivePageAnimation();
+  const computed = getComputedStyle(page);
+  const from = {
+    transform: computed.transform === 'none' ? 'translateX(0)' : computed.transform,
+    opacity: computed.opacity
+  };
+  const animation = page.animate([from, target], { duration, easing, fill: 'forwards' });
+  activePageAnimation = { animation, page };
+  try {
+    await animation.finished;
+  } catch {
+    return false;
+  }
+  if (activePageAnimation?.animation !== animation) return false;
+  activePageAnimation = null;
+  page.style.transform = target.transform || '';
+  page.style.opacity = target.opacity ?? '';
+  return true;
+}
+
+async function transitionRoute(hash, direction = 'forward', updateHistory = true) {
+  const sequence = ++navigationSequence;
+  const currentPage = document.querySelector('.page');
+  if (direction === 'back' && currentPage) {
+    const completed = await animatePage(currentPage, {
+      transform: 'translateX(34px)',
+      opacity: 0
+    }, { duration: 240 });
+    if (!completed || sequence !== navigationSequence) return;
   } else {
-    location.hash = hash;
+    cancelActivePageAnimation();
+  }
+
+  if (updateHistory && location.hash !== hash) history.pushState(null, '', hash);
+  ui.pageAnimation = '';
+  await renderRoute();
+  if (sequence !== navigationSequence) return;
+  const nextPage = document.querySelector('.page');
+  if (!nextPage) return;
+  if (direction === 'forward') {
+    nextPage.style.transform = 'translateX(34px)';
+    nextPage.style.opacity = '0.72';
+    await animatePage(nextPage, { transform: 'translateX(0)', opacity: 1 }, { duration: 260 });
+  } else {
+    nextPage.style.transform = 'translateX(0)';
+    nextPage.style.opacity = '0';
+    await animatePage(nextPage, { transform: 'translateX(0)', opacity: 1 }, {
+      duration: 190,
+      easing: motionEasing('--motion-direct')
+    });
+  }
+  if (sequence === navigationSequence && nextPage) {
+    nextPage.style.transform = '';
+    nextPage.style.opacity = '';
   }
 }
 
+function navigateTo(hash, animation = 'page--enter-right') {
+  const direction = animation === 'page--enter-right' ? 'forward' : 'back';
+  void transitionRoute(hash, direction, true);
+}
+
 async function navigateBackToList() {
-  const page = document.querySelector('.page');
-  page?.classList.add('page--exit-right');
-  await wait(250);
-  navigateTo('#/list', 'page--fade-in');
+  await transitionRoute('#/list', 'back', true);
 }
 
 async function handleBack() {
@@ -743,6 +1000,7 @@ function setActionBusy(action, button, label) {
   ui.actionBusy = action;
   if (!button) return;
   button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
   button.classList.add('is-loading');
   button.innerHTML = `<span class="button-spinner"></span>${escapeHtml(label)}`;
 }
@@ -751,6 +1009,7 @@ function clearActionBusy(button, label) {
   ui.actionBusy = null;
   if (!button) return;
   button.disabled = false;
+  button.removeAttribute('aria-busy');
   button.classList.remove('is-loading');
   button.textContent = label;
 }
@@ -931,9 +1190,46 @@ async function animateListDeletion(ids) {
   await wait(260);
 }
 
-function closeOpenSwipeRow() {
-  document.querySelector('.event-card-row--open')?.classList.remove('event-card-row--open');
-  ui.openSwipeId = null;
+function setSwipeVisual(row, offset) {
+  const card = row?.querySelector('.event-card');
+  const actions = row?.querySelector('.event-card-actions');
+  if (!card || !actions) return;
+  card.style.transform = `translateX(${offset}px)`;
+  actions.style.opacity = String(clamp(Math.abs(Math.min(0, offset)) / 136));
+}
+
+function animateSwipeRow(row, target, velocity = 0) {
+  const card = row?.querySelector('.event-card');
+  const actions = row?.querySelector('.event-card-actions');
+  if (!card || !actions) return Promise.resolve();
+  const start = transformTranslateX(card);
+  card.getAnimations().forEach((animation) => animation.cancel());
+  actions.getAnimations().forEach((animation) => animation.cancel());
+  const open = target < 0;
+  row.classList.toggle('event-card-row--open', open);
+  const distance = Math.abs(target - start) / 136;
+  const duration = clamp(Math.round(165 + distance * 95 - Math.min(Math.abs(velocity), 1.5) * 35), 150, 270);
+  const animation = card.animate([
+    { transform: `translateX(${start}px)` },
+    { transform: `translateX(${target}px)` }
+  ], { duration, easing: motionEasing(), fill: 'forwards' });
+  const actionAnimation = actions.animate([
+    { opacity: clamp(Math.abs(Math.min(0, start)) / 136) },
+    { opacity: open ? 1 : 0 }
+  ], { duration: Math.min(duration, 210), easing: motionEasing('--motion-direct'), fill: 'forwards' });
+  return animation.finished.catch(() => null).then(() => {
+    if (!card.isConnected || card.getAnimations().includes(animation) === false) return;
+    animation.cancel();
+    actionAnimation.cancel();
+    card.style.transform = '';
+    actions.style.opacity = '';
+  });
+}
+
+function closeOpenSwipeRow(exceptRow = null) {
+  const openRow = document.querySelector('.event-card-row--open');
+  if (openRow && openRow !== exceptRow) void animateSwipeRow(openRow, 0);
+  if (!exceptRow || openRow !== exceptRow) ui.openSwipeId = null;
 }
 
 function bindSwipeCards() {
@@ -947,48 +1243,83 @@ function bindSwipeCards() {
     let currentOffset = 0;
     let dragging = false;
     let suppressClick = false;
+    let directionLocked = false;
+    let samples = [];
+    let activePointerId = null;
 
     card.addEventListener('pointerdown', (event) => {
-      if (!event.isPrimary) return;
+      if (!event.isPrimary || event.button > 0) return;
+      const running = card.getAnimations();
+      if (running.length) {
+        const interruptedOffset = transformTranslateX(card);
+        running.forEach((animation) => animation.cancel());
+        row.querySelector('.event-card-actions')?.getAnimations().forEach((animation) => animation.cancel());
+        setSwipeVisual(row, interruptedOffset);
+      }
       startX = event.clientX;
       startY = event.clientY;
-      startOffset = row.classList.contains('event-card-row--open') ? -revealWidth : 0;
+      startOffset = transformTranslateX(card);
+      if (!startOffset) startOffset = row.classList.contains('event-card-row--open') ? -revealWidth : 0;
       currentOffset = startOffset;
       dragging = false;
-      card.setPointerCapture?.(event.pointerId);
+      directionLocked = false;
+      samples = [{ x: event.clientX, time: performance.now() }];
+      activePointerId = event.pointerId;
+      capturePointer(card, event.pointerId);
     });
 
     card.addEventListener('pointermove', (event) => {
-      if (!card.hasPointerCapture?.(event.pointerId)) return;
+      if (activePointerId !== event.pointerId) return;
       const deltaX = event.clientX - startX;
       const deltaY = event.clientY - startY;
-      if (!dragging && Math.abs(deltaX) > 8 && Math.abs(deltaX) > Math.abs(deltaY)) {
+      if (!directionLocked && (Math.abs(deltaX) > 9 || Math.abs(deltaY) > 9)) {
+        directionLocked = true;
+        if (Math.abs(deltaY) >= Math.abs(deltaX) * 0.92) {
+          releasePointer(card, event.pointerId);
+          activePointerId = null;
+          return;
+        }
         dragging = true;
-        closeOpenSwipeRow();
+        card.classList.remove('is-pressed');
+        closeOpenSwipeRow(row);
         row.classList.add('event-card-row--dragging');
         card.classList.add('event-card--dragging');
       }
       if (!dragging) return;
       event.preventDefault();
-      currentOffset = Math.max(-revealWidth, Math.min(0, startOffset + deltaX));
-      card.style.transform = `translateX(${currentOffset}px)`;
+      const desired = startOffset + deltaX;
+      if (desired > 0) currentOffset = desired * 0.18;
+      else if (desired < -revealWidth) currentOffset = -revealWidth + (desired + revealWidth) * 0.18;
+      else currentOffset = desired;
+      setSwipeVisual(row, currentOffset);
+      const now = performance.now();
+      samples.push({ x: event.clientX, time: now });
+      samples = samples.filter((sample) => now - sample.time <= 90);
     });
 
-    const finishSwipe = (event) => {
+    const finishSwipe = (event, cancelled = false) => {
+      if (activePointerId !== event.pointerId) return;
+      releasePointer(card, event.pointerId);
+      activePointerId = null;
       if (!dragging) return;
-      card.releasePointerCapture?.(event.pointerId);
       row.classList.remove('event-card-row--dragging');
       card.classList.remove('event-card--dragging');
-      card.style.transform = '';
-      const shouldOpen = currentOffset < -revealWidth / 2;
-      row.classList.toggle('event-card-row--open', shouldOpen);
+      const finishTime = performance.now();
+      samples.push({ x: event.clientX, time: finishTime });
+      samples = samples.filter((sample) => finishTime - sample.time <= 90);
+      const first = samples[0];
+      const last = samples[samples.length - 1] || first;
+      const velocity = cancelled || last.time === first.time ? 0 : (last.x - first.x) / (last.time - first.time);
+      const projected = currentOffset + velocity * 140;
+      const shouldOpen = !cancelled && (velocity < -0.45 || (velocity <= 0.45 && projected < -revealWidth / 2));
       ui.openSwipeId = shouldOpen ? row.dataset.rowId : null;
+      void animateSwipeRow(row, shouldOpen ? -revealWidth : 0, velocity);
       suppressClick = true;
-      setTimeout(() => { suppressClick = false; }, 0);
+      setTimeout(() => { suppressClick = false; }, 320);
       dragging = false;
     };
     card.addEventListener('pointerup', finishSwipe);
-    card.addEventListener('pointercancel', finishSwipe);
+    card.addEventListener('pointercancel', (event) => finishSwipe(event, true));
     card.addEventListener('click', (event) => {
       if (suppressClick) {
         event.preventDefault();
@@ -998,7 +1329,8 @@ function bindSwipeCards() {
       if (row.classList.contains('event-card-row--open')) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        closeOpenSwipeRow();
+        ui.openSwipeId = null;
+        void animateSwipeRow(row, 0);
       }
     });
   });
@@ -1790,5 +2122,8 @@ async function renderRoute() {
   else await renderListPage();
 }
 
-window.addEventListener('hashchange', renderRoute);
+window.addEventListener('hashchange', () => {
+  const direction = parseRoute().name === 'list' ? 'back' : 'forward';
+  void transitionRoute(location.hash, direction, false);
+});
 bootstrap();
