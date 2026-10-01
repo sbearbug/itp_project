@@ -176,8 +176,8 @@ export async function addDeadlineToCalendar(event) // → Promise<void>
 2. `#/add`：添加页，承载选图、识别和逐条确认。
 3. `#/edit/:id`：编辑已保存活动。
 
-进入添加或编辑页时页面从右侧滑入；返回时向右滑出，时长约 250ms，缓动为
-`ease-out`。Android 返回键通过 `@capacitor/app` 处理：添加页和编辑页返回列表，
+进入添加或编辑页时页面从右侧滑入；返回时向右滑出，时长约 250ms，使用无明显弹跳的
+CSS `linear()` 弹簧曲线。Android 返回键通过 `@capacitor/app` 处理：添加页和编辑页返回列表，
 列表页退出 App；识别进行中返回时先确认“放弃本次识别？”。
 
 ### 设置底部弹层
@@ -195,7 +195,8 @@ export async function addDeadlineToCalendar(event) // → Promise<void>
 - 自定义配置使用 Capacitor Preferences 保存在当前设备。Key 仅作输入框密码遮罩，
   并非加密存储，因此仍只适合低额度 Demo Key。
 - 弹层先在视口底部完成渲染，再于下一次绘制后向上进入；关闭时向下滑出，进入和退出
-  均使用 250ms `ease-out`，避免首次显示跳帧。开启 `prefers-reduced-motion` 时仅淡入淡出。
+  均使用约 250ms 的 CSS `linear()` 轻弹簧曲线，避免首次显示跳帧。已有
+  `prefers-reduced-motion` 规则仍保留为淡入淡出。
 
 ### 主题层
 
@@ -296,11 +297,11 @@ export async function addDeadlineToCalendar(event) // → Promise<void>
   “已保存”或“已加入日历”，2 秒自动消失。
 - 删除操作必须二次确认；删除动画为列表项向左滑出并收起。新增活动从列表顶部
   淡入。空列表显示说明文字和“选择截图”按钮。
-- 所有动画仅使用 CSS `transform`、`opacity` 与 `keyframes`，单次过渡控制在
-  150–300ms，统一使用 `ease-out`。开启 `prefers-reduced-motion` 时关闭 shimmer
-  和位移动画，只保留透明度变化。
-- 所有可点击按钮、卡片和入口使用统一的 Material 状态层与点击水波纹，不再依赖
-  网页式缩放反馈。水波纹原点跟随触点，约 420ms 后结束；减少动态效果时关闭扩散动画。
+- 所有动画仅使用 CSS `transform`、`opacity` 与 `keyframes`，常规单次过渡控制在
+  150–300ms。物理反馈使用 CSS `linear()` 定义的直接过渡、轻弹簧和按压三种曲线，不引入
+  动画库；已有 `prefers-reduced-motion` 规则继续关闭 shimmer 和大幅位移。
+- 所有可点击按钮、卡片和入口使用统一的 Material 状态层与点击水波纹，并为非手势控件
+  增加极轻的按压缩放以强化 pointer-down 即时响应。水波纹原点跟随触点，约 420ms 后结束。
 - 默认浅色烟雨主题和其他五套主题的颜色只在 `style.css` 的主题令牌中定义。组件不直接
   引用色值；强调填充、主要按钮、日期块、“今天”卡片和紧急状态均通过语义变量适配。
   界面使用系统中文字体，不使用渐变和装饰性阴影；卡片仅用细边框或极轻阴影区分层级。
