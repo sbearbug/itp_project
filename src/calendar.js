@@ -53,39 +53,35 @@ function safeFilename(value) {
   return `${name || '校园活动'}.ics`;
 }
 
-function downloadIcs(event, beginMs, endMs) {
+function withoutDeadlineLine(description) {
+  return String(description || '')
+    .split(/\r?\n/)
+    .filter((line) => !/^报名截止[：:]/.test(line.trim()))
+    .join('\n')
+    .trim();
+}
+
+function deadlineDescription(event) {
+  return event.signup ? `报名方式：${event.signup}` : '请在截止时间前完成报名。';
+}
+
+function downloadIcs({ uidPrefix, title, startMs, endMs, location, description, filename }) {
   const stamp = toIcsUtc(new Date());
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Campus Action//Local Web//ZH-CN'];
   lines.push(...eventLines({
-    uid: makeUid(event.id || 'event'),
-    start: new Date(beginMs),
+    uid: makeUid(uidPrefix),
+    start: new Date(startMs),
     end: new Date(endMs),
-    title: event.title || '校园活动',
-    location: event.location || '',
-    description: event.description || ''
+    title,
+    location,
+    description
   }, stamp));
-
-  if (event.deadline) {
-    const deadlineMs = toTimestamp(event.deadline);
-    if (deadlineMs !== null) {
-      const deadlineTitle = `【报名截止】${event.title || '校园活动'}`;
-      lines.push(...eventLines({
-        uid: makeUid(`${event.id || 'event'}-deadline`),
-        start: new Date(deadlineMs),
-        end: new Date(deadlineMs + 60 * 60 * 1000),
-        title: deadlineTitle,
-        location: event.location || '',
-        description: event.description || ''
-      }, stamp));
-    }
-  }
-
   lines.push('END:VCALENDAR');
   const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/calendar;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = safeFilename(event.title);
+  link.download = safeFilename(filename);
   link.hidden = true;
   document.body.appendChild(link);
   link.click();
@@ -103,7 +99,15 @@ export async function addToCalendar(event) {
   const endMs = parsedEnd && parsedEnd > beginMs ? parsedEnd : beginMs + defaultDuration;
 
   if (!isNative()) {
-    downloadIcs(event, beginMs, endMs);
+    downloadIcs({
+      uidPrefix: event.id || 'event',
+      title: event.title || '校园活动',
+      startMs: beginMs,
+      endMs,
+      location: event.location || '',
+      description: withoutDeadlineLine(event.description),
+      filename: event.title || '校园活动'
+    });
     return;
   }
 
@@ -113,6 +117,41 @@ export async function addToCalendar(event) {
     endMs,
     allDay: Boolean(event.allDay),
     location: event.location || '',
-    description: event.description || ''
+    description: withoutDeadlineLine(event.description)
+  });
+}
+
+export function hasDeadlineCalendarEntry(event) {
+  return Boolean(event?.deadline && toTimestamp(event.deadline) !== null);
+}
+
+export async function addDeadlineToCalendar(event) {
+  const deadlineMs = toTimestamp(event?.deadline);
+  if (deadlineMs === null) throw new Error('报名截止时间格式不正确');
+  const baseTitle = event.title || '校园活动';
+  const title = `【报名截止】${baseTitle}`;
+  const endMs = deadlineMs + 60 * 60 * 1000;
+  const description = deadlineDescription(event);
+
+  if (!isNative()) {
+    downloadIcs({
+      uidPrefix: `${event.id || 'event'}-deadline`,
+      title,
+      startMs: deadlineMs,
+      endMs,
+      location: '',
+      description,
+      filename: `报名截止_${baseTitle}`
+    });
+    return;
+  }
+
+  await CalendarIntent.insert({
+    title,
+    beginMs: deadlineMs,
+    endMs,
+    allDay: false,
+    location: '',
+    description
   });
 }

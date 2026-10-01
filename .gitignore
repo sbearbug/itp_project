@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.local
+.env.*.local
 android/.gradle/
 android/local.properties
 android/app/build/
@@ -11,3 +12,5 @@ android/app/build/
 .local-package/
 campus-demo-local.zip
 campus-demo-android.apk
+campus-demo-android-v*.apk
+schedule-official-v*.apk

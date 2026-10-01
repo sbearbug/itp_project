@@ -5,6 +5,7 @@ import functools
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -14,9 +15,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT / "dist"
 CONFIG_PATH = ROOT / "config.json"
-UPSTREAM_URL = "https://api.deepseek.com/chat/completions"
 START_PORT = 8765
 MAX_REQUEST_BYTES = 24 * 1024 * 1024
+ALLOWED_API_HOSTS = {"open.bigmodel.cn", "api.deepseek.com"}
+
+
+def validated_upstream_url(value):
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in ALLOWED_API_HOSTS
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.endswith("/chat/completions")
+    ):
+        return ""
+    return urllib.parse.urlunsplit(parsed)
 
 
 def load_api_key():
@@ -114,8 +133,13 @@ class CampusHandler(SimpleHTTPRequestHandler):
             self.send_json_error(503, "尚未配置 API Key，请先在设置窗口中填写")
             return
 
+        upstream_url = validated_upstream_url(self.headers.get("X-Campus-Api-Url"))
+        if not upstream_url:
+            self.send_json_error(400, "识别服务地址无效或不在允许列表中")
+            return
+
         upstream_request = urllib.request.Request(
-            UPSTREAM_URL,
+            upstream_url,
             data=request_body,
             headers={
                 "Authorization": "Bearer " + self.api_key,
@@ -135,12 +159,15 @@ class CampusHandler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
         except urllib.error.HTTPError as error:
+            if error.code == 429:
+                self.send_json_error(429, "当前使用人数较多，请稍后重试")
+                return
             body = error.read()
             try:
                 json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 body = json.dumps(
-                    {"error": {"message": "DeepSeek 服务返回错误（{}）".format(error.code)}},
+                    {"error": {"message": "识别服务返回错误（{}）".format(error.code)}},
                     ensure_ascii=False,
                 ).encode("utf-8")
             self.send_response(error.code)
@@ -150,7 +177,7 @@ class CampusHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
         except urllib.error.URLError as error:
             reason = getattr(error, "reason", error)
-            self.send_json_error(502, "无法连接 DeepSeek：{}".format(reason))
+            self.send_json_error(502, "无法连接识别服务：{}".format(reason))
         except TimeoutError:
             self.send_json_error(504, "识别服务连接超时，请重试")
         except Exception as error:  # Keep terminal users from seeing an HTML traceback page.

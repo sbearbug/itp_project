@@ -13,7 +13,7 @@
 |---|---|
 | 前端 | 原生 HTML / CSS / JS，用 Vite vanilla 模板打包 |
 | 封装 | Capacitor → Android APK |
-| 识别 | 前端直接调用 DeepSeek API（OpenAI 兼容格式，`https://api.deepseek.com`，模型 `deepseek-flash`，支持图片输入） |
+| 识别 | 默认调用智谱 OpenAI 兼容接口（`https://open.bigmodel.cn/api/paas/v4/chat/completions`，模型 `glm-4.6v-flash`）；配置中保留 DeepSeek 备用项 |
 | 存储 | `@capacitor/preferences`，活动列表存为一个 JSON 字符串 |
 | 写日历 | 自写一个极小的 Capacitor 原生插件，调起系统日历"新建日程"界面 |
 | 选图 | `<input type="file" accept="image/*">`（Capacitor WebView 原生支持） |
@@ -95,12 +95,13 @@ export async function extractEventsFromText(text, now)
 ```
 
 实现要点：
-- 使用 OpenAI 兼容的 `/chat/completions`，模型 `deepseek-flash`。图片**只能放在 `user` 消息里**（放进 system 会返回 400）：user 消息内容为 `[{type:"text"}, {type:"image_url", image_url:{url: imageDataUrl}}]`，system 消息只放纯文本提示词。
+- 使用 OpenAI 兼容的 `/chat/completions`，默认模型 `glm-4.6v-flash`。system 消息只放纯文本提示词，图片和文字只放在 user 消息中。GLM 请求会移除图片 Data URL 的 `data:image/...;base64,` 前缀，令 `image_url.url` 只包含纯 base64，并显式发送 `thinking: { type: "disabled" }`。DeepSeek 备用配置仍保留原 Data URL 格式。
 - 系统提示词要求：只输出 JSON 数组；把当前日期和星期告诉模型，用来推算相对日期；拿不准的字段填 `null` 并写进 `uncertain`；一张图有多个活动时拆成多条。
 - 解析时容错：去掉 ```json 包裹，找到第一个 `[` 到最后一个 `]` 再 `JSON.parse`。
 - 发送前把图片压缩到长边不超过 1600px，节省费用和时间。
 - 文字入口复用同一套 system prompt、请求、容错解析和 Event 归一化；
   user 消息改为纯文字，不附带 `image_url`。
+- HTTP 429 统一转换为“当前使用人数较多，请稍后重试”，识别错误卡片保留已选图片或文字并提供重试。
 
 ### store.js
 
@@ -118,12 +119,15 @@ export async function deleteEvent(id)          // → Promise<void>
 ```js
 /** 调起系统日历的新建日程界面，字段已预填，由用户点保存 */
 export async function addToCalendar(event)     // → Promise<void>
+export async function addDeadlineToCalendar(event) // → Promise<void>
 ```
 
 - 通过 `registerPlugin("CalendarIntent")` 调用原生方法 `insert({ title, beginMs, endMs, location, description })`。
 - `end` 为空时默认 `start + 1 小时`；`start` 为空时不允许调用，界面提示用户先补全时间。
 - 全天活动的 `end` 为空时默认使用次日零点。
-- “加入日历”先保存当前表单；成功调起日历界面后把状态更新为 `registered`。
+- “加入日历”先保存当前表单。活动参与时间和报名截止时间必须作为两个独立日程处理：
+  活动日程的描述移除“报名截止”行；存在合法 `deadline` 时，用户从活动日历返回后再
+  打开标题为“【报名截止】活动名”的截止日程。两步完成后状态更新为 `registered`。
 
 ### CalendarIntentPlugin.java（原生，约 30 行）
 
@@ -134,9 +138,11 @@ export async function addToCalendar(event)     // → Promise<void>
 
 ### config.js
 
-- 保留导出 `API_BASE`、`MODEL`、`getApiKey()`；同时通过 `getApiConfig()` 在每次请求前
-  读取设备上的自定义 API 地址、模型名和 Key。存在完整自定义配置时优先使用，否则
-  使用项目根目录 `.env.local` 在构建时注入的默认配置。
+- 保留导出 `API_BASE`、`MODEL`、`getApiKey()`；`API_PROVIDERS` 集中保存 GLM 与
+  DeepSeek 的 endpoint、模型、Key、图片编码和额外请求参数。`ACTIVE_API_PROVIDER`
+  默认是 `glm`，改为 `deepseek` 即可切回原接口，不删除原实现。`getApiConfig()` 每次
+  请求前读取设备自定义配置，存在完整配置时优先使用，否则使用 `.env.local` 注入的
+  `VITE_GLM_API_KEY`（DeepSeek 备用项使用 `VITE_DEEPSEEK_API_KEY`）。
 - **混淆不等于安全**：此 key 必须是 demo 专用、低余额、设消费上限，demo 结束即作废。
 
 ## 5. 界面与路由
@@ -171,8 +177,9 @@ export async function addToCalendar(event)     // → Promise<void>
 - 在列表、添加或编辑页向右滑超过约 58px，主页面向右移动并露出左侧设置抽屉；
   普通活动卡片和表单外框均可起手，只有已展开快捷操作的卡片、弹窗和抽屉自身不触发。
   手势通过非被动 `touchmove` 在移动过程中识别，并用 `touch-action: pan-y` 保留纵向滚动，
-  避免 Android WebView 在 `pointerup` 前取消横向手势。点击遮罩、在抽屉内向左滑或按
-  Android 返回键关闭。
+  避免 Android WebView 在 `pointerup` 前取消横向手势。点击遮罩、在抽屉层向右滑或按
+  Android 返回键关闭；左滑不触发关闭，避免页面沿错误方向越过列表位置。关闭手势只
+  在抽屉根节点绑定一次，设置内容重绘时不得重复注册监听器。
 - 当前设置只包含 OpenAI 兼容 API 的基础地址、模型名称和 API Key。保存后无需重启，
   下一次识别直接使用自定义配置；“恢复内置”清除覆盖项并回退到构建配置。
 - 自定义配置使用 Capacitor Preferences 保存在当前设备。Key 仅作输入框密码遮罩，
@@ -186,7 +193,8 @@ export async function addToCalendar(event)     // → Promise<void>
 - 活动卡片显示标题、开始时间、地点和状态标签。距离报名截止不足 24 小时的活动
   显示“今天截止”或“明天截止”。
 - 活动卡片默认只显示日程内容。向左滑动卡片后，卡片平移并露出右侧“加入日历”
-  和“删除”操作；点击卡片或向右滑动收回，删除前二次确认。
+  和“删除”操作；卡片在展开态取消接缝侧圆角，操作区使用连续背景和外侧圆角，不能
+  在卡片与“加入日历”之间露出底色缝隙。点击卡片或向右滑动收回，删除前二次确认。
 - 页头“管理”进入多选模式，选中任意数量的活动后可通过底部工具条批量删除或
   批量加入日历；Android 返回键优先退出多选模式。由于原生层使用系统日历的
   `ACTION_INSERT`，批量加入时按顺序逐个打开日历页，用户保存并返回后继续下一条。
@@ -249,6 +257,12 @@ export async function addToCalendar(event)     // → Promise<void>
 - 所有动画仅使用 CSS `transform`、`opacity` 与 `keyframes`，单次过渡控制在
   150–300ms，统一使用 `ease-out`。开启 `prefers-reduced-motion` 时关闭 shimmer
   和位移动画，只保留透明度变化。
+- 所有未禁用的原生 `button` 按下时都使用 150ms `ease-out` 轻微缩小并收紧
+  阴影；通过统一的 `is-pressed` 指针状态保证立即重绘或跳转前仍有可见反馈，并使用
+  Android WebView 兼容性更稳定的 `transform: scale()`。对已左滑的活动卡片单独组合
+  `translateX()` 和 `scale()`，避免按下时丢失快捷操作位移。
+- 网页首次配置 API Key 的弹窗宽度不超过视口减 32px，高度不超过动态视口；输入框
+  字号固定为至少 16px，防止移动浏览器聚焦时自动放大整个页面。
 
 ## 6. 本地网页版
 
@@ -263,12 +277,13 @@ export async function addToCalendar(event)     // → Promise<void>
   `localStorage`，活动、待确认队列和每日启动标记均可持久保存。
 - `@capacitor/app` 的 Android 返回键监听和 `@capacitor/splash-screen` 只在
   `isNative()` 为真时调用，浏览器不触发原生插件。
-- `extractEvents(imageDataUrl, now)` 在原生模式仍直连 DeepSeek；网页模式
+- `extractEvents(imageDataUrl, now)` 在原生模式直连当前配置的识别服务；网页模式
   只请求同源 `POST /api/chat`，不发送 Authorization 头。本地版构建时
-  显式清空 `VITE_DEEPSEEK_API_KEY`，确保 ZIP 内的前端产物不包含 Key。
-- `addToCalendar(event)` 在网页模式下生成并下载 `.ics`。文件使用
-  CRLF，事件时间转为 UTC `Z` 格式，对 iCalendar 特殊字符转义，
-  活动与可选的“【报名截止】”事件都带有提前 1 小时的 `VALARM`。
+  显式清空 `VITE_GLM_API_KEY` 和 `VITE_DEEPSEEK_API_KEY`，确保浏览器前端产物不包含 Key。
+- `addToCalendar(event)` 在网页模式下生成活动 `.ics`；存在截止时间时，
+  `addDeadlineToCalendar(event)` 再生成一个独立的“报名截止_活动名.ics”，不把两个
+  VEVENT 合在同一文件。文件使用 CRLF，事件时间转为 UTC `Z` 格式，对 iCalendar
+  特殊字符转义，两种日程都带有提前 1 小时的 `VALARM`。
 - Vite 的 `base` 为 `./`，使静态资源在压缩包目录内使用相对路径。
 
 ### 本地服务器与发布包
@@ -280,19 +295,20 @@ export async function addToCalendar(event)     // → Promise<void>
   检查状态；未配置时显示与 App 风格一致且不可跳过的设置弹窗，再通过
   同源 `POST /api/config` 把 Key 交给本地服务器。服务器原子写入同目录
   `config.json`，接口只返回是否已配置，不读回 Key；设置抽屉可随时更新。
-- 本地服务器把 `POST /api/chat` 代理转发到固定的
-  `https://api.deepseek.com/chat/completions`。超时、网络错误和非 JSON
-  上游错误均返回 `{ "error": { "message": "中文说明" } }`。
+- 本地服务器读取前端配置发送的 `X-Campus-Api-Url`，只允许 HTTPS 且主机为
+  `open.bigmodel.cn` 或 `api.deepseek.com`、路径以 `/chat/completions` 结尾，随后代理
+  `POST /api/chat`。超时、网络错误、429 和非 JSON 上游错误均返回
+  `{ "error": { "message": "中文说明" } }`。
 - Mac 使用 `start.command`，Windows 使用 `start.bat`；两者先切换到自身
   目录再启动 Python，避免用户从不同工作目录双击时找不到文件。
 - `npm run package:local` 会先构建前端，然后生成项目根目录的
   `campus-demo-local.zip`。ZIP 根目录直接包含 `dist/`、`server.py`、
-  空的 `config.json` 模板、两个启动文件和《使用说明.txt》，并保留 `start.command`
+  预置 GLM Demo Key 的 `config.json`、两个启动文件和《使用说明.txt》，并保留 `start.command`
   的 Unix 可执行权限。
-- 正式 Demo 产物更新使用 `npm run release:demo`：先用原生构建配置生成
-  主产物 `campus-demo-android.apk`，再显式清空前端 Key 构建辅助产物
-  `campus-demo-local.zip`。这个顺序保证两份产物来自同一份源码，同时网页包
-  不会携带 Android Demo 的内置 Key。
+- 正式 Demo 产物更新使用 `npm run release:demo`：Android 构建注入 gitignored 的
+  `.env.production.local` 中的 GLM Demo Key、强制清空备用 DeepSeek Key，生成
+  `schedule-official-v1.apk`；随后网页构建清空前端中的两套 Key，但将同一 GLM Demo Key
+  写入 `campus-demo-local.zip` 的本地代理配置。设置界面仍允许用户替换 Key。
 
 ## 7. 分工建议
 

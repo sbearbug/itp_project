@@ -4,9 +4,10 @@ import { SplashScreen } from '@capacitor/splash-screen';
 import { Preferences } from '@capacitor/preferences';
 import { isNative } from './platform.js';
 import { extractEvents, extractEventsFromText, compressImage } from './extract.js';
-import { addToCalendar } from './calendar.js';
+import { addToCalendar, addDeadlineToCalendar, hasDeadlineCalendarEntry } from './calendar.js';
 import {
   API_BASE,
+  API_KEY_LABEL,
   MODEL,
   getCustomApiConfig,
   saveCustomApiConfig,
@@ -28,6 +29,7 @@ const RECOGNITION_STATES = ['idle', 'compressing', 'uploading', 'recognizing', '
 const STAGE_STATES = ['compressing', 'uploading', 'recognizing', 'done'];
 const STATUS_MESSAGES = ['正在读取文字…', '正在识别时间…', '正在整理活动信息…'];
 const FULL_LAUNCH_DATE_KEY = 'full_launch_animation_date';
+const APP_VERSION = '1.3';
 const WORKING_STATES = ['compressing', 'uploading', 'recognizing'];
 const seenUncertainIds = new Set();
 
@@ -42,6 +44,8 @@ let listScrollHandler = null;
 let closeActiveDialog = null;
 let settingsRoot = null;
 let settingsGestureInstalled = false;
+let settingsCloseGestureInstalled = false;
+let pressFeedbackInstalled = false;
 
 const ui = {
   booting: true,
@@ -157,7 +161,7 @@ function openWebApiKeyDialog({ required = false } = {}) {
       <div class="app-dialog__mark">◆</div>
       <h2 id="api-key-dialog-title">配置识别 API</h2>
       <p>API Key 只会发送给本机服务器，并保存在当前文件夹的 <code>config.json</code> 中，不会写入网页代码。</p>
-      <label class="settings-field"><span>DEEPSEEK API KEY</span>
+      <label class="settings-field"><span>${escapeHtml(API_KEY_LABEL)}</span>
         <input name="apiKey" type="password" placeholder="sk-..." autocomplete="off" required autofocus>
         <small>保存后立即可以上传截图识别</small>
       </label>
@@ -247,7 +251,7 @@ async function renderSettingsDrawer() {
     <aside class="settings-drawer" aria-label="设置" aria-hidden="${!ui.settingsOpen}">
       <div class="settings-drawer__handle"></div>
       <header class="settings-header">
-        <span>SETTINGS</span>
+        <span>SETTINGS · V${APP_VERSION}</span>
         <h2>识别设置</h2>
         <p>${native ? (custom ? '正在使用你的自定义 API' : '正在使用内置 Demo API') : (webConfigured ? 'API Key 已保存在本机' : '尚未配置 API Key')}</p>
       </header>
@@ -307,23 +311,92 @@ async function renderSettingsDrawer() {
   });
   settingsRoot.querySelector('#web-api-key-button')?.addEventListener('click', async () => {
     closeSettingsDrawer();
+    await wait(250);
     if (await openWebApiKeyDialog()) {
       showToast('API Key 已保存');
     }
   });
 
-  const drawer = settingsRoot.querySelector('.settings-drawer');
+  setupSettingsCloseGesture();
+}
+
+function setupSettingsCloseGesture() {
+  if (settingsCloseGestureInstalled || !settingsRoot) return;
+  settingsCloseGestureInstalled = true;
+  const gestureSurface = settingsRoot;
   let startX = 0;
   let startY = 0;
-  drawer.addEventListener('pointerdown', (event) => {
+  let swiping = false;
+  const beginCloseSwipe = (x, y) => {
+    startX = x;
+    startY = y;
+    swiping = true;
+  };
+  const tryCloseWithSwipe = (x, y, event) => {
+    if (!swiping || !ui.settingsOpen) return;
+    const deltaX = x - startX;
+    const deltaY = y - startY;
+    const horizontal = Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
+    if (deltaX > 10 && horizontal && event?.cancelable) event.preventDefault();
+    if (!horizontal || deltaX < 58) return;
+    swiping = false;
+    closeSettingsDrawer();
+  };
+  gestureSurface.addEventListener('touchstart', (event) => {
+    const touch = event.touches[0];
+    if (touch) beginCloseSwipe(touch.clientX, touch.clientY);
+  }, { passive: true });
+  gestureSurface.addEventListener('touchmove', (event) => {
+    const touch = event.touches[0];
+    if (touch) tryCloseWithSwipe(touch.clientX, touch.clientY, event);
+  }, { passive: false });
+  gestureSurface.addEventListener('touchend', () => { swiping = false; }, { passive: true });
+  gestureSurface.addEventListener('touchcancel', () => { swiping = false; }, { passive: true });
+  gestureSurface.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse') beginCloseSwipe(event.clientX, event.clientY);
+  });
+  gestureSurface.addEventListener('pointerup', (event) => {
+    if (event.pointerType === 'mouse') tryCloseWithSwipe(event.clientX, event.clientY, event);
+    swiping = false;
+  });
+}
+
+function setupPressFeedback() {
+  if (pressFeedbackInstalled) return;
+  pressFeedbackInstalled = true;
+  let pressed = null;
+  let startX = 0;
+  let startY = 0;
+  let pressedAt = 0;
+
+  const release = (immediate = false) => {
+    const target = pressed;
+    pressed = null;
+    if (!target) return;
+    const delay = immediate ? 0 : Math.max(0, 110 - (performance.now() - pressedAt));
+    window.setTimeout(() => target.classList.remove('is-pressed'), delay);
+  };
+
+  document.addEventListener('pointerdown', (event) => {
+    if (!event.isPrimary || event.button > 0) return;
+    const target = event.target instanceof Element
+      ? event.target.closest('button:not(:disabled), [role="button"], .add-picker__button, .capture-button')
+      : null;
+    if (!target) return;
+    release(true);
+    pressed = target;
     startX = event.clientX;
     startY = event.clientY;
-  });
-  drawer.addEventListener('pointerup', (event) => {
-    const deltaX = event.clientX - startX;
-    const deltaY = event.clientY - startY;
-    if (deltaX < -60 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) closeSettingsDrawer();
-  });
+    pressedAt = performance.now();
+    target.classList.add('is-pressed');
+  }, true);
+  document.addEventListener('pointermove', (event) => {
+    if (!pressed) return;
+    if (Math.hypot(event.clientX - startX, event.clientY - startY) > 9) release(true);
+  }, true);
+  document.addEventListener('pointerup', () => release(), true);
+  document.addEventListener('pointercancel', () => release(true), true);
+  window.addEventListener('blur', () => release(true));
 }
 
 async function openSettingsDrawer() {
@@ -422,7 +495,10 @@ function statusLabel(status) {
   return { interested: '感兴趣', registered: '已报名', skipped: '不参加' }[status] || '感兴趣';
 }
 
-function calendarSuccessMessage() {
+function calendarSuccessMessage(event) {
+  if (hasDeadlineCalendarEntry(event)) {
+    return isNative() ? '已分别打开活动和报名截止日历' : '已分别下载两个日历文件';
+  }
   return isNative() ? '已打开系统日历' : '已下载日历文件';
 }
 
@@ -497,6 +573,7 @@ async function bootstrap() {
   }
   ui.pageAnimation = 'page--fade-in';
   await renderRoute();
+  setupPressFeedback();
   await ensureWebApiKey();
   setupSettingsGesture();
   setupAndroidBackButton();
@@ -773,16 +850,24 @@ async function createAppReturnWaiter() {
   };
 }
 
-async function openSavedEventInCalendar(event, waitForReturn = false) {
+async function launchCalendarStep(action, waitForReturn) {
   const waiter = waitForReturn && isNative() ? await createAppReturnWaiter() : null;
   try {
-    await addToCalendar(event);
-    await updateEvent(event.id, { status: 'registered' });
+    await action();
     if (waiter) await waiter.promise;
   } catch (error) {
     waiter?.cancel();
     throw error;
   }
+}
+
+async function openSavedEventInCalendar(event, waitForReturn = false) {
+  const hasDeadline = hasDeadlineCalendarEntry(event);
+  await launchCalendarStep(() => addToCalendar(event), hasDeadline || waitForReturn);
+  if (hasDeadline) {
+    await launchCalendarStep(() => addDeadlineToCalendar(event), waitForReturn);
+  }
+  await updateEvent(event.id, { status: 'registered' });
 }
 
 function setFabHidden(hidden) {
@@ -860,6 +945,7 @@ async function renderListPage() {
     wrap?.classList.toggle('is-open', ui.endedExpanded);
   });
   document.querySelector('#manage-button')?.addEventListener('click', async () => {
+    await wait(90);
     ui.selectionMode = !ui.selectionMode;
     ui.selectedEventIds.clear();
     await renderListPage();
@@ -874,7 +960,8 @@ async function renderListPage() {
     navigateTo('#/add');
   });
   bindSwipeCards();
-  document.querySelectorAll('[data-event-id]').forEach((card) => card.addEventListener('click', () => {
+  document.querySelectorAll('[data-event-id]').forEach((card) => card.addEventListener('click', async () => {
+    await wait(90);
     formError = '';
     navigateTo(`#/edit/${card.dataset.eventId}`);
   }));
@@ -910,7 +997,7 @@ async function renderListPage() {
       await refresh();
       ui.actionBusy = null;
       await renderListPage();
-      showToast(calendarSuccessMessage());
+      showToast(calendarSuccessMessage(event));
     } catch (error) {
       ui.actionBusy = null;
       await renderListPage();
@@ -925,9 +1012,11 @@ async function renderListPage() {
       await showNotice(`有 ${missingTime.length} 个活动缺少开始时间，请先补全后再加入日历。`);
       return;
     }
+    const deadlineCount = selected.filter(hasDeadlineCalendarEntry).length;
+    const totalEntries = selected.length + deadlineCount;
     const calendarPrompt = isNative()
-      ? `将依次打开 ${selected.length} 个活动的系统日历页面。每保存一条并返回后，会继续下一条。`
-      : `将为选中的 ${selected.length} 个活动依次下载日历文件。如浏览器询问，请允许下载多个文件。`;
+      ? `活动日期与报名截止将分开处理，共依次打开 ${totalEntries} 个系统日历页面。每保存一条并返回后，会继续下一条。`
+      : `活动日期与报名截止将分开处理，共下载 ${totalEntries} 个日历文件。如浏览器询问，请允许下载多个文件。`;
     if (!await confirmAction(calendarPrompt, { title: '批量加入日历？', confirmLabel: '开始' })) return;
     setActionBusy('calendar', document.querySelector('#bulk-calendar-button'), '处理中…');
     try {
@@ -1267,12 +1356,11 @@ function bindEventForm(event, options) {
       try {
         await updateEvent(event.id, patch);
         const saved = { ...event, ...patch };
-        await addToCalendar(saved);
-        await updateEvent(event.id, { status: 'registered' });
+        await openSavedEventInCalendar(saved);
         await refresh();
         ui.actionBusy = null;
         formError = '';
-        showToast(calendarSuccessMessage());
+        showToast(calendarSuccessMessage(saved));
         await navigateBackToList();
       } catch (error) {
         ui.actionBusy = null;

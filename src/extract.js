@@ -1,4 +1,4 @@
-import { getApiConfig, MODEL } from './config.js';
+import { getApiConfig, getDefaultApiConfig } from './config.js';
 import { isNative } from './platform.js';
 
 const DESCRIPTION_TEMPLATE = '活动：{title}\n时间：{start} 至 {end}\n地点：{location}\n报名截止：{deadline}\n报名方式：{signup}';
@@ -28,6 +28,24 @@ function normalizeEvent(raw) {
   };
 }
 
+function pureImageBase64(value) {
+  return String(value || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');
+}
+
+function prepareUserContent(userContent, imageUrlMode) {
+  if (!Array.isArray(userContent) || imageUrlMode !== 'base64') return userContent;
+  return userContent.map((part) => {
+    if (part?.type !== 'image_url') return part;
+    return {
+      ...part,
+      image_url: {
+        ...part.image_url,
+        url: pureImageBase64(part.image_url?.url)
+      }
+    };
+  });
+}
+
 export async function compressImage(file, maxEdge = 1600) {
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
@@ -41,9 +59,10 @@ export async function compressImage(file, maxEdge = 1600) {
 
 async function requestExtraction(userContent, now, sourceLabel) {
   const native = isNative();
-  const { apiBase, model, apiKey } = native
+  const apiConfig = native
     ? await getApiConfig()
-    : { apiBase: '', model: MODEL, apiKey: '' };
+    : getDefaultApiConfig({ includeApiKey: false });
+  const { apiUrl, model, apiKey, imageUrlMode, requestOptions } = apiConfig;
   if (native && !apiKey) throw new Error('未配置 API Key，请在左侧设置中填写或检查项目根目录的 .env.local');
 
   const localNow = new Intl.DateTimeFormat('zh-CN', {
@@ -70,9 +89,10 @@ async function requestExtraction(userContent, now, sourceLabel) {
   const requestBody = JSON.stringify({
     model,
     temperature: 0.1,
+    ...requestOptions,
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userContent }
+      { role: 'user', content: prepareUserContent(userContent, imageUrlMode) }
     ]
   });
 
@@ -81,10 +101,11 @@ async function requestExtraction(userContent, now, sourceLabel) {
     const cancel = () => request.abort();
     const cleanup = () => window.removeEventListener('campus:cancel-extraction', cancel);
 
-    request.open('POST', native ? apiBase + '/chat/completions' : '/api/chat');
+    request.open('POST', native ? apiUrl : '/api/chat');
     request.timeout = 60_000;
     request.setRequestHeader('Content-Type', 'application/json');
     if (native) request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
+    else request.setRequestHeader('X-Campus-Api-Url', apiUrl);
 
     request.upload.addEventListener('load', () => {
       window.dispatchEvent(new CustomEvent('campus:extract-stage', { detail: 'recognizing' }));
@@ -93,6 +114,10 @@ async function requestExtraction(userContent, now, sourceLabel) {
     request.addEventListener('load', () => {
       cleanup();
       if (request.status < 200 || request.status >= 300) {
+        if (request.status === 429) {
+          reject(new Error('当前使用人数较多，请稍后重试'));
+          return;
+        }
         let detail = '';
         try {
           const body = JSON.parse(request.responseText);

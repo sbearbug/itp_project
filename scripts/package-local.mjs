@@ -9,11 +9,23 @@ const stageRoot = join(projectRoot, '.local-package');
 const packageRoot = join(stageRoot, 'campus-demo-local');
 const outputPath = join(projectRoot, 'campus-demo-local.zip');
 
+function readLocalGlmKey() {
+  if (process.env.VITE_GLM_API_KEY?.trim()) return process.env.VITE_GLM_API_KEY.trim();
+  try {
+    const line = readFileSync(join(projectRoot, '.env.production.local'), 'utf8')
+      .split(/\r?\n/)
+      .find((item) => item.startsWith('VITE_GLM_API_KEY='));
+    return line ? line.slice('VITE_GLM_API_KEY='.length).trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 execFileSync(npmCommand, ['run', 'build'], {
   cwd: projectRoot,
   stdio: 'inherit',
-  env: { ...process.env, VITE_DEEPSEEK_API_KEY: '' }
+  env: { ...process.env, VITE_GLM_API_KEY: '', VITE_DEEPSEEK_API_KEY: '' }
 });
 
 rmSync(stageRoot, { recursive: true, force: true });
@@ -22,8 +34,13 @@ cpSync(join(projectRoot, 'dist'), join(packageRoot, 'dist'), { recursive: true }
 for (const name of ['server.py', 'start.command', 'start.bat', '使用说明.txt']) {
   cpSync(join(projectRoot, 'local', name), join(packageRoot, name));
 }
-// Always distribute an empty template, even if a developer filled their local copy.
-writeFileSync(join(packageRoot, 'config.json'), '{\n  "api_key": ""\n}\n', 'utf8');
+// Keep credentials out of browser JavaScript. The loopback-only proxy reads
+// the preconfigured demo key from this adjacent file.
+writeFileSync(
+  join(packageRoot, 'config.json'),
+  JSON.stringify({ api_key: readLocalGlmKey() }, null, 2) + '\n',
+  'utf8'
+);
 chmodSync(join(packageRoot, 'start.command'), 0o755);
 
 const crcTable = Array.from({ length: 256 }, (_, number) => {
