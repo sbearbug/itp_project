@@ -497,6 +497,15 @@ body {
 }
 button, input, textarea, select { font-family: inherit; }
 button { border: 0; }
+html {
+  min-height: 100%;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+body, #app, .page { min-height: 100dvh; }
+body { overscroll-behavior: none; }
+input, textarea, select { font-size: 16px; }
 body.settings-open #app { transform: none; }
 .page { width: min(100%, 680px); padding: 0 20px max(36px, env(safe-area-inset-bottom)); }
 .list-page { padding-bottom: max(104px, calc(env(safe-area-inset-bottom) + 92px)); }
@@ -706,6 +715,7 @@ body.settings-open #app { transform: none; }
   transform: translate(-50%, 100%);
   transition: transform 250ms var(--motion-spring-soft), opacity 180ms var(--motion-direct);
   will-change: transform;
+  overscroll-behavior: contain;
 }
 body.settings-open .settings-drawer { transform: translate(-50%, 0); }
 body.settings-closing .settings-drawer { transform: translate(-50%, 100%); }
@@ -780,7 +790,15 @@ body.settings-closing .settings-drawer { transform: translate(-50%, 100%); }
 .settings-actions .button:disabled { color: var(--text-2); }
 .bulk-toolbar .button--calendar-compact { color: var(--on-btn); background: var(--btn); }
 
-button, [role="button"], .add-picker__button, .capture-button { position: relative; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+button, [role="button"], .add-picker__button, .capture-button {
+  position: relative;
+  overflow: hidden;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
 button::after, [role="button"]::after, .add-picker__button::after, .capture-button::after {
   content: "";
   position: absolute;
