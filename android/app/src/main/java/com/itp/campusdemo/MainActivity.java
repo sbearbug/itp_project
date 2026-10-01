@@ -12,24 +12,41 @@ public class MainActivity extends BridgeActivity {
         boolean systemDark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
             == Configuration.UI_MODE_NIGHT_YES;
         String appearanceMode = themePreferences.getString("appearance_mode", "system");
-        String legacyLightTheme = themePreferences.getString("palette_theme", "mist");
-        String lightTheme = themePreferences.getString("light_theme", legacyLightTheme);
-        if ("cyan".equals(lightTheme)) lightTheme = "ice";
-        String darkTheme = themePreferences.getString("dark_theme", "graphite");
         boolean useDark = "dark".equals(appearanceMode)
             || ("system".equals(appearanceMode) && systemDark);
-        String theme = useDark ? darkTheme : lightTheme;
-        if ("graphite".equals(theme)) {
+        String selectedTheme = themePreferences.getString("selected_theme", null);
+        if (selectedTheme == null) {
+            if (useDark) {
+                String legacyDarkTheme = themePreferences.getString("dark_theme", "graphite");
+                selectedTheme = "ice-dark".equals(legacyDarkTheme) ? "ice" : "mist";
+            } else {
+                String legacyLightTheme = themePreferences.getString(
+                    "light_theme",
+                    themePreferences.getString("palette_theme", "mist")
+                );
+                selectedTheme = "cyan".equals(legacyLightTheme) ? "ice" : legacyLightTheme;
+            }
+        }
+        if (!"mist".equals(selectedTheme) && !"ice".equals(selectedTheme)
+            && !"moss".equals(selectedTheme) && !"sunny".equals(selectedTheme)) {
+            selectedTheme = "mist";
+        }
+        String theme = selectedTheme + (useDark ? "-dark" : "-light");
+        if ("mist-dark".equals(theme)) {
             setTheme(R.style.AppTheme_NoActionBarLaunch_Graphite);
         } else if ("ice-dark".equals(theme)) {
             setTheme(R.style.AppTheme_NoActionBarLaunch_IceDark);
-        } else if ("ice".equals(theme)) {
+        } else if ("moss-dark".equals(theme)) {
+            setTheme(R.style.AppTheme_NoActionBarLaunch_MossDark);
+        } else if ("sunny-dark".equals(theme)) {
+            setTheme(R.style.AppTheme_NoActionBarLaunch_SunnyDark);
+        } else if ("ice-light".equals(theme)) {
             setTheme(R.style.AppTheme_NoActionBarLaunch_Ice);
-        } else if ("moss".equals(theme)) {
+        } else if ("moss-light".equals(theme)) {
             setTheme(R.style.AppTheme_NoActionBarLaunch_Moss);
-        } else if ("sunny".equals(theme)) {
+        } else if ("sunny-light".equals(theme)) {
             setTheme(R.style.AppTheme_NoActionBarLaunch_Sunny);
-        } else if ("mist".equals(theme)) {
+        } else if ("mist-light".equals(theme)) {
             setTheme(R.style.AppTheme_NoActionBarLaunch_Mist);
         } else {
             setTheme(R.style.AppTheme_NoActionBarLaunch);

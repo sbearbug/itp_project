@@ -5,6 +5,8 @@
     <color name="theme_ice_dark_background">#111A30</color>
     <color name="theme_graphite_background">#1D242E</color>
     <color name="theme_moss_background">#F1F3EC</color>
+    <color name="theme_moss_dark_background">#161C11</color>
     <color name="theme_sunny_background">#FFF8EE</color>
+    <color name="theme_sunny_dark_background">#1F1608</color>
     <color name="theme_mist_background">#F4F4F6</color>
 </resources>

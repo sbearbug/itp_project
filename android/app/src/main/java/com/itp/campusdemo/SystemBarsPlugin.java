@@ -16,10 +16,9 @@ public class SystemBarsPlugin extends Plugin {
     public void setNavigationBar(PluginCall call) {
         String colorValue = call.getString("color", "#F4F4F6");
         boolean darkIcons = Boolean.TRUE.equals(call.getBoolean("darkIcons", true));
-        String theme = call.getString("theme", "mist");
+        String theme = call.getString("theme", "mist-light");
         String mode = call.getString("mode", "system");
-        String lightTheme = call.getString("lightTheme", "mist");
-        String darkTheme = call.getString("darkTheme", "graphite");
+        String selectedTheme = call.getString("selectedTheme", "mist");
         getActivity().runOnUiThread(() -> {
             try {
                 Window window = getActivity().getWindow();
@@ -30,8 +29,7 @@ public class SystemBarsPlugin extends Plugin {
                     .edit()
                     .putString("resolved_theme", theme)
                     .putString("appearance_mode", mode)
-                    .putString("light_theme", lightTheme)
-                    .putString("dark_theme", darkTheme)
+                    .putString("selected_theme", selectedTheme)
                     .apply();
                 call.resolve(new JSObject());
             } catch (Exception error) {

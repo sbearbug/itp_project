@@ -8,15 +8,19 @@
       (() => {
         try {
           const mode = localStorage.getItem('campus-theme-mode') || 'system';
-          const legacy = localStorage.getItem('campus-theme-palette');
-          const savedLight = localStorage.getItem('campus-theme-light') || legacy || 'mist';
-          const lightTheme = savedLight === 'cyan' ? 'ice' : savedLight;
-          const darkTheme = localStorage.getItem('campus-theme-dark') || 'graphite';
           const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-          document.documentElement.dataset.theme = dark ? darkTheme : lightTheme;
+          let theme = localStorage.getItem('campus-theme-name');
+          if (!theme) {
+            const legacy = dark
+              ? (localStorage.getItem('campus-theme-dark') || 'graphite')
+              : (localStorage.getItem('campus-theme-light') || localStorage.getItem('campus-theme-palette') || 'mist');
+            theme = legacy === 'cyan' || legacy === 'ice-dark' ? 'ice' : legacy === 'graphite' ? 'mist' : legacy;
+          }
+          if (!['mist', 'ice', 'moss', 'sunny'].includes(theme)) theme = 'mist';
+          document.documentElement.dataset.theme = `${theme}-${dark ? 'dark' : 'light'}`;
           document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
         } catch (_) {
-          document.documentElement.dataset.theme = 'mist';
+          document.documentElement.dataset.theme = 'mist-light';
         }
       })();
     </script>

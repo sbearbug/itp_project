@@ -203,19 +203,21 @@ CSS `linear()` 弹簧曲线。Android 返回键通过 `@capacitor/app` 处理：
 - `style.css` 中的所有组件只引用 `--bg`、`--surface`、`--surface-2`、`--divider`、
   `--text`、`--text-2`、`--accent`、`--on-accent`、`--btn`、`--on-btn`、`--date-bg`、
   `--date-text`、`--today-bg`、`--today-text`、`--highlight`、`--on-highlight`、
-  `--urgent-bg` 和 `--urgent-text` 语义变量；具体色值只出现在六套主题定义中。
-- 主题按模式分组：浅色提供烟雨、坚冰、苔绿、暖阳，深色提供石墨、坚冰。深浅模式为
-  “跟随系统、浅色、深色”；新用户默认跟随系统，浅色选择烟雨，深色选择石墨。系统
-  外观变化或用户切换模式时，解析并应用对应分组中保存的选择。
-- `theme.js` 使用 Preferences 分别持久化深浅模式、浅色主题和深色主题，同时镜像到
-  `localStorage`。旧版“青蓝”偏好会自动迁移为浅色“坚冰”。
+  `--urgent-bg` 和 `--urgent-text` 语义变量；具体色值只出现在主题令牌定义中。
+- 主题提供烟雨、坚冰、苔绿、暖阳四套，每套同时包含浅色和深色版本；模式提供
+  “跟随系统、浅色、深色”。当前配色始终由“所选主题 × 当前模式”共同确定，新用户
+  默认跟随系统并选择烟雨。系统外观变化或用户切换模式时，仍使用同一主题的对应版本。
+- `theme.js` 使用 Preferences 持久化模式和单一主题选择，同时镜像到 `localStorage`。
+  旧版“青蓝”会迁移为坚冰；原先选择石墨或坚冰（深色）的用户分别迁移为烟雨或坚冰，
+  并保留迁移当时生效的深色模式。
   `index.html` 的头部脚本在业务脚本和 CSS 首次绘制前同步设置 `data-theme`，避免 WebView
   先闪现默认浅色；初始化完成前原生 Splash 保持显示。
-- 主题切换即时生效，颜色过渡约 200ms；开启减少动态效果时取消该过渡。
+- 设置页只显示“模式”和“主题”，每个主题预览同时展示浅色和深色两个小样。主题切换
+  即时生效，颜色过渡约 200ms；开启减少动态效果时取消该过渡。
   `prefers-color-scheme` 变化会在“跟随系统”模式下即时重新解析主题。
 - 状态栏通过官方 `@capacitor/status-bar` 同步背景和图标明暗；自有 `SystemBarsPlugin`
-  同步 Android 导航栏，并把已解析主题、模式、浅色主题和深色主题镜像到原生偏好。
-  MainActivity 在 `super.onCreate` 前选择对应的六套 Splash 样式，因此冷启动页、状态栏、导航栏和
+  同步 Android 导航栏，并把已解析主题、模式和所选主题镜像到原生偏好。
+  MainActivity 在 `super.onCreate` 前选择对应的八套 Splash 背景，因此冷启动页、状态栏、导航栏和
   WebView 首帧使用同一背景色。
 
 ### 列表页

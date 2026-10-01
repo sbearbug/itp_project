@@ -6,15 +6,13 @@ import { Preferences } from '@capacitor/preferences';
 import { isNative } from './platform.js';
 import {
   APPEARANCE_MODES,
-  DARK_THEMES,
-  LIGHT_THEMES,
+  THEMES,
   MODE_LABELS,
   THEME_LABELS,
   getAppearanceSettings,
   initializeTheme,
   setAppearanceMode,
-  setDarkTheme,
-  setLightTheme
+  setSelectedTheme
 } from './theme.js';
 import { extractEvents, extractEventsFromText, compressImage } from './extract.js';
 import { addToCalendar, addDeadlineToCalendar, hasDeadlineCalendarEntry } from './calendar.js';
@@ -277,7 +275,7 @@ async function renderSettingsDrawer() {
     <div class="settings-menu">
       <button class="settings-menu-item" type="button" data-settings-view="appearance">
         <span class="settings-menu-item__icon">◐</span>
-        <span><b>外观</b><small>${MODE_LABELS[appearance.mode]} · ${THEME_LABELS[appearance.resolvedTheme]}</small></span>
+        <span><b>外观</b><small>${MODE_LABELS[appearance.mode]} · ${THEME_LABELS[appearance.theme]}</small></span>
         <i>›</i>
       </button>
       <button class="settings-menu-item" type="button" data-settings-view="api">
@@ -289,35 +287,24 @@ async function renderSettingsDrawer() {
 
   const appearanceMarkup = `${backHeader('外观', '主题会立即应用并保存在当前设备')}
     <section class="appearance-section">
-      <h3>深浅模式</h3>
-      <div class="appearance-mode" role="group" aria-label="深浅模式">
+      <h3>模式</h3>
+      <div class="appearance-mode" role="group" aria-label="模式">
         ${APPEARANCE_MODES.map((mode) => `<button type="button" data-appearance-mode="${mode}" aria-pressed="${appearance.mode === mode}">${MODE_LABELS[mode]}</button>`).join('')}
       </div>
     </section>
     <section class="appearance-section">
-      <h3>浅色主题</h3>
+      <h3>主题</h3>
       <div class="theme-options">
-        ${LIGHT_THEMES.map((theme) => `<button class="theme-option" type="button" data-light-theme="${theme}" aria-pressed="${appearance.lightTheme === theme}">
-          <span class="theme-option__preview" data-theme-preview="${theme}">
-            <i></i><i></i><i></i><i></i>
+        ${THEMES.map((theme) => `<button class="theme-option" type="button" data-selected-theme="${theme}" aria-pressed="${appearance.theme === theme}">
+          <span class="theme-option__preview" aria-hidden="true">
+            <i class="theme-option__sample" data-theme-preview="${theme}-light"><b></b><b></b><b></b><b></b></i>
+            <i class="theme-option__sample" data-theme-preview="${theme}-dark"><b></b><b></b><b></b><b></b></i>
           </span>
           <span>${THEME_LABELS[theme]}</span>
-          <b>${appearance.lightTheme === theme ? '✓' : ''}</b>
+          <b>${appearance.theme === theme ? '✓' : ''}</b>
         </button>`).join('')}
       </div>
-    </section>
-    <section class="appearance-section">
-      <h3>深色主题</h3>
-      <div class="theme-options">
-        ${DARK_THEMES.map((theme) => `<button class="theme-option" type="button" data-dark-theme="${theme}" aria-pressed="${appearance.darkTheme === theme}">
-          <span class="theme-option__preview" data-theme-preview="${theme}">
-            <i></i><i></i><i></i><i></i>
-          </span>
-          <span>${THEME_LABELS[theme]}</span>
-          <b>${appearance.darkTheme === theme ? '✓' : ''}</b>
-        </button>`).join('')}
-      </div>
-      <p class="settings-note">系统或手动切换深浅模式时，会使用对应分组中选定的主题。</p>
+      <p class="settings-note">每个色块左侧为浅色版本，右侧为深色版本；模式切换时会使用同一主题的对应版本。</p>
     </section>`;
 
   const apiMarkup = `${backHeader('识别接口', native ? (custom ? '正在使用自定义接口' : '正在使用内置演示接口') : (webConfigured ? '接口密钥已保存在本机' : '尚未配置接口密钥'))}
@@ -363,12 +350,8 @@ async function renderSettingsDrawer() {
     await setAppearanceMode(button.dataset.appearanceMode);
     await renderSettingsDrawer();
   }));
-  settingsRoot.querySelectorAll('[data-light-theme]').forEach((button) => button.addEventListener('click', async () => {
-    await setLightTheme(button.dataset.lightTheme);
-    await renderSettingsDrawer();
-  }));
-  settingsRoot.querySelectorAll('[data-dark-theme]').forEach((button) => button.addEventListener('click', async () => {
-    await setDarkTheme(button.dataset.darkTheme);
+  settingsRoot.querySelectorAll('[data-selected-theme]').forEach((button) => button.addEventListener('click', async () => {
+    await setSelectedTheme(button.dataset.selectedTheme);
     await renderSettingsDrawer();
   }));
   settingsRoot.querySelector('#api-settings-form')?.addEventListener('submit', async (event) => {

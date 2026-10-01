@@ -61,11 +61,29 @@
         <item name="android:navigationBarColor">@color/theme_moss_background</item>
     </style>
 
+    <style name="AppTheme.NoActionBarLaunch.MossDark" parent="AppTheme.NoActionBarLaunch">
+        <item name="android:background">@color/theme_moss_dark_background</item>
+        <item name="windowSplashScreenBackground">@color/theme_moss_dark_background</item>
+        <item name="android:statusBarColor">@color/theme_moss_dark_background</item>
+        <item name="android:navigationBarColor">@color/theme_moss_dark_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
     <style name="AppTheme.NoActionBarLaunch.Sunny" parent="AppTheme.NoActionBarLaunch">
         <item name="android:background">@color/theme_sunny_background</item>
         <item name="windowSplashScreenBackground">@color/theme_sunny_background</item>
         <item name="android:statusBarColor">@color/theme_sunny_background</item>
         <item name="android:navigationBarColor">@color/theme_sunny_background</item>
+    </style>
+
+    <style name="AppTheme.NoActionBarLaunch.SunnyDark" parent="AppTheme.NoActionBarLaunch">
+        <item name="android:background">@color/theme_sunny_dark_background</item>
+        <item name="windowSplashScreenBackground">@color/theme_sunny_dark_background</item>
+        <item name="android:statusBarColor">@color/theme_sunny_dark_background</item>
+        <item name="android:navigationBarColor">@color/theme_sunny_dark_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 
     <style name="AppTheme.NoActionBarLaunch.Mist" parent="AppTheme.NoActionBarLaunch">

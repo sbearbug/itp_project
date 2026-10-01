@@ -4,17 +4,18 @@ import { StatusBar, Style } from '@capacitor/status-bar';
 import { isNative } from './platform.js';
 
 const MODE_KEY = 'appearance_mode';
+const THEME_KEY = 'appearance_theme';
 const LEGACY_PALETTE_KEY = 'appearance_palette';
-const LIGHT_THEME_KEY = 'appearance_light_theme';
-const DARK_THEME_KEY = 'appearance_dark_theme';
+const LEGACY_LIGHT_THEME_KEY = 'appearance_light_theme';
+const LEGACY_DARK_THEME_KEY = 'appearance_dark_theme';
 const MODE_CACHE_KEY = 'campus-theme-mode';
+const THEME_CACHE_KEY = 'campus-theme-name';
 const LEGACY_PALETTE_CACHE_KEY = 'campus-theme-palette';
-const LIGHT_THEME_CACHE_KEY = 'campus-theme-light';
-const DARK_THEME_CACHE_KEY = 'campus-theme-dark';
+const LEGACY_LIGHT_THEME_CACHE_KEY = 'campus-theme-light';
+const LEGACY_DARK_THEME_CACHE_KEY = 'campus-theme-dark';
 
 export const APPEARANCE_MODES = Object.freeze(['system', 'light', 'dark']);
-export const LIGHT_THEMES = Object.freeze(['mist', 'ice', 'moss', 'sunny']);
-export const DARK_THEMES = Object.freeze(['graphite', 'ice-dark']);
+export const THEMES = Object.freeze(['mist', 'ice', 'moss', 'sunny']);
 
 export const MODE_LABELS = Object.freeze({
   system: '跟随系统',
@@ -26,9 +27,7 @@ export const THEME_LABELS = Object.freeze({
   mist: '烟雨',
   ice: '坚冰',
   moss: '苔绿',
-  sunny: '暖阳',
-  graphite: '石墨',
-  'ice-dark': '坚冰'
+  sunny: '暖阳'
 });
 
 const SystemBars = globalThis.__campusSystemBars
@@ -39,39 +38,52 @@ function normalizeMode(value) {
   return APPEARANCE_MODES.includes(value) ? value : 'system';
 }
 
-function normalizeLightTheme(value) {
-  const migrated = value === 'cyan' ? 'ice' : value;
-  return LIGHT_THEMES.includes(migrated) ? migrated : 'mist';
+function normalizeTheme(value) {
+  const migrated = {
+    cyan: 'ice',
+    graphite: 'mist',
+    'ice-dark': 'ice'
+  }[value] || value;
+  return THEMES.includes(migrated) ? migrated : 'mist';
 }
 
-function normalizeDarkTheme(value) {
-  return DARK_THEMES.includes(value) ? value : 'graphite';
+function shouldUseDark(mode) {
+  return mode === 'dark' || (mode === 'system' && systemScheme.matches);
 }
 
+function migrateCachedTheme(mode) {
+  const savedTheme = localStorage.getItem(THEME_CACHE_KEY);
+  if (savedTheme) return normalizeTheme(savedTheme);
+  if (shouldUseDark(mode)) {
+    return normalizeTheme(localStorage.getItem(LEGACY_DARK_THEME_CACHE_KEY) || 'graphite');
+  }
+  return normalizeTheme(
+    localStorage.getItem(LEGACY_LIGHT_THEME_CACHE_KEY)
+      || localStorage.getItem(LEGACY_PALETTE_CACHE_KEY)
+      || 'mist'
+  );
+}
+
+const cachedMode = normalizeMode(localStorage.getItem(MODE_CACHE_KEY));
 let appearance = {
-  mode: normalizeMode(localStorage.getItem(MODE_CACHE_KEY)),
-  lightTheme: normalizeLightTheme(
-    localStorage.getItem(LIGHT_THEME_CACHE_KEY) || localStorage.getItem(LEGACY_PALETTE_CACHE_KEY)
-  ),
-  darkTheme: normalizeDarkTheme(localStorage.getItem(DARK_THEME_CACHE_KEY))
+  mode: cachedMode,
+  theme: migrateCachedTheme(cachedMode)
 };
 let transitionTimer = null;
 let initialized = false;
 
 function resolveTheme() {
-  const dark = appearance.mode === 'dark' || (appearance.mode === 'system' && systemScheme.matches);
-  return dark ? appearance.darkTheme : appearance.lightTheme;
+  return `${appearance.theme}-${shouldUseDark(appearance.mode) ? 'dark' : 'light'}`;
 }
 
 function cacheAppearance() {
   localStorage.setItem(MODE_CACHE_KEY, appearance.mode);
-  localStorage.setItem(LIGHT_THEME_CACHE_KEY, appearance.lightTheme);
-  localStorage.setItem(DARK_THEME_CACHE_KEY, appearance.darkTheme);
+  localStorage.setItem(THEME_CACHE_KEY, appearance.theme);
 }
 
 async function syncNativeSystemBars(theme, background) {
   if (!isNative()) return;
-  const dark = DARK_THEMES.includes(theme);
+  const dark = theme.endsWith('-dark');
   await Promise.allSettled([
     StatusBar.setBackgroundColor({ color: background }),
     StatusBar.setStyle({ style: dark ? Style.Light : Style.Dark }),
@@ -80,8 +92,7 @@ async function syncNativeSystemBars(theme, background) {
       darkIcons: !dark,
       theme,
       mode: appearance.mode,
-      lightTheme: appearance.lightTheme,
-      darkTheme: appearance.darkTheme
+      selectedTheme: appearance.theme
     })
   ]);
 }
@@ -96,7 +107,7 @@ export async function applyTheme({ animate = false } = {}) {
     transitionTimer = setTimeout(() => document.documentElement.classList.remove('theme-transition'), 220);
   }
   document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = DARK_THEMES.includes(theme) ? 'dark' : 'light';
+  document.documentElement.style.colorScheme = theme.endsWith('-dark') ? 'dark' : 'light';
   const background = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background);
   await syncNativeSystemBars(theme, background);
@@ -110,19 +121,26 @@ export function getAppearanceSettings() {
 export async function initializeTheme() {
   if (initialized) return getAppearanceSettings();
   initialized = true;
-  const [savedMode, savedLight, savedDark, legacyPalette] = await Promise.all([
+  const [savedMode, savedTheme, legacyLight, legacyDark, legacyPalette] = await Promise.all([
     Preferences.get({ key: MODE_KEY }),
-    Preferences.get({ key: LIGHT_THEME_KEY }),
-    Preferences.get({ key: DARK_THEME_KEY }),
+    Preferences.get({ key: THEME_KEY }),
+    Preferences.get({ key: LEGACY_LIGHT_THEME_KEY }),
+    Preferences.get({ key: LEGACY_DARK_THEME_KEY }),
     Preferences.get({ key: LEGACY_PALETTE_KEY })
   ]);
+  const mode = normalizeMode(savedMode.value || appearance.mode);
+  const migratedTheme = shouldUseDark(mode)
+    ? normalizeTheme(legacyDark.value || 'graphite')
+    : normalizeTheme(legacyLight.value || legacyPalette.value || appearance.theme);
   appearance = {
-    mode: normalizeMode(savedMode.value || appearance.mode),
-    lightTheme: normalizeLightTheme(savedLight.value || legacyPalette.value || appearance.lightTheme),
-    darkTheme: normalizeDarkTheme(savedDark.value || appearance.darkTheme)
+    mode,
+    theme: normalizeTheme(savedTheme.value || migratedTheme)
   };
   cacheAppearance();
-  await applyTheme();
+  await Promise.allSettled([
+    Preferences.set({ key: THEME_KEY, value: appearance.theme }),
+    applyTheme()
+  ]);
   systemScheme.addEventListener('change', () => {
     if (appearance.mode === 'system') void applyTheme({ animate: true });
   });
@@ -137,18 +155,10 @@ export async function setAppearanceMode(mode) {
   return getAppearanceSettings();
 }
 
-export async function setLightTheme(theme) {
-  appearance.lightTheme = normalizeLightTheme(theme);
+export async function setSelectedTheme(theme) {
+  appearance.theme = normalizeTheme(theme);
   cacheAppearance();
-  await Preferences.set({ key: LIGHT_THEME_KEY, value: appearance.lightTheme });
-  await applyTheme({ animate: true });
-  return getAppearanceSettings();
-}
-
-export async function setDarkTheme(theme) {
-  appearance.darkTheme = normalizeDarkTheme(theme);
-  cacheAppearance();
-  await Preferences.set({ key: DARK_THEME_KEY, value: appearance.darkTheme });
+  await Preferences.set({ key: THEME_KEY, value: appearance.theme });
   await applyTheme({ animate: true });
   return getAppearanceSettings();
 }
