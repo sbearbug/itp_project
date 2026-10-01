@@ -27,7 +27,19 @@
     <title>校园活动助手</title>
   </head>
   <body>
-    <div id="app"></div>
+    <!-- 放在 <body> 的最开头、主界面根元素之前。几何与桌面图标完全一致（108 画布中央 72 的可见区域） -->
+    <div id="intro" class="intro" aria-hidden="true">
+      <div class="intro-icon">
+        <svg class="intro-base" viewBox="18 18 72 72" width="100%" height="100%">
+          <rect x="0" y="0" width="108" height="108" fill="#565C78"/>
+          <g transform="translate(19.560 21.660) scale(0.42)"><path fill="#E3E3E5" d="M50,50 L122,50 Q128,50 128,56 L128,134 Q128,140 122,140 L50,140 Q44,140 44,134 L44,56 Q44,50 50,50 Z"/><path fill="#F4F4F6" d="M58,14 L58,14 Q64,14 64,20 L64,32 Q64,38 58,38 L58,38 Q52,38 52,32 L52,20 Q52,14 58,14 Z"/><path fill="#F4F4F6" d="M102,14 L102,14 Q108,14 108,20 L108,32 Q108,38 102,38 L102,38 Q96,38 96,32 L96,20 Q96,14 102,14 Z"/></g>
+        </svg>
+        <svg class="intro-page" viewBox="18 18 72 72" width="100%" height="100%">
+          <g transform="translate(19.560 21.660) scale(0.42)"><g transform="rotate(-4 80 90)"><path fill="#fff" d="M36,46 L41.5,41 L47,46 L52.5,41 L58,46 L63.5,41 L69,46 L74.5,41 L80,46 L85.5,41 L91,46 L96.5,41 L102,46 L107.5,41 L113,46 L118.5,41 L124,46 L124,132 Q124,138 118,138 L42,138 Q36,138 36,132 Z"/><path fill="#C9A97E" d="M54,64 L74,64 Q78,64 78,68 L78,74 Q78,78 74,78 L54,78 Q50,78 50,74 L50,68 Q50,64 54,64 Z"/><path fill="#DADDEB" d="M53.5,92 L102.5,92 Q106,92 106,95.5 L106,95.5 Q106,99 102.5,99 L53.5,99 Q50,99 50,95.5 L50,95.5 Q50,92 53.5,92 Z"/><path fill="#DADDEB" d="M53.5,106 L86.5,106 Q90,106 90,109.5 L90,109.5 Q90,113 86.5,113 L53.5,113 Q50,113 50,109.5 L50,109.5 Q50,106 53.5,106 Z"/></g></g>
+        </svg>
+      </div>
+    </div>
+    <div id="app" class="app-root--intro-pending"></div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

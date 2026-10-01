@@ -158,15 +158,23 @@ export async function addDeadlineToCalendar(event) // → Promise<void>
 
 ### 启动动画
 
-- 使用 `@capacitor/splash-screen`，原生启动页、状态栏、WebView 初始背景和网页启动层
-  统一使用 `#FFFFFF`。网页启动层完成首次渲染后立即隐藏系统启动页，避免闪色。
-- 启动动画只显示蓝色日历标记和中文应用名“活动”，移除英文标签、口号和装饰性小字；
-  标记与标题依次淡入，停留后淡出，完整过程约 1.5 秒。
-- 启动动画期间并行执行 `loadEvents()`。动画和数据加载都完成后才显示列表页；
-  点击启动层任意位置可提前结束动画，但仍等待数据加载完成。
-- 使用 Preferences 记录完整动画最后播放的本地日期。每天首次启动播放完整动画，
-  当天再次启动只播放约 0.5 秒的快速淡入淡出。
-- `prefers-reduced-motion` 开启时取消上移和弹出，仅保留透明度变化。
+- 启动动画是独立模块 `src/intro.js` + `src/intro.css`，遮罩结构 `#intro` 写在
+  `index.html` 的 `<body>` 最前（源自 `material/intro-snippet.html`）。
+  **模块内的动画逻辑与参数由用户提供，接入时不得修改。**
+- 遮罩内用 SVG 复刻桌面图标（108 画布中央 72 的可见区域），与系统启动页图标几何一致；
+  `--intro-icon-size` 与 `--intro-icon-radius` 需与真机上系统启动页图标的
+  实际显示尺寸和遮罩形状对齐，按实测微调。
+- 主界面根元素 `#app` 初始带 `app-root--intro-pending`（`opacity: 0`），
+  遮罩结束、主界面露出后由 `intro.js` 移除。
+- 启动顺序：`initializeTheme()` → `getIntroMode()` → 隐藏系统启动页 →
+  `Promise.all([playIntro({ mode, app, themeBg }), 数据加载])` → 渲染列表页。
+  即动画与数据加载并行，两者都完成后才渲染。
+- `themeBg` 取当前主题 `--bg` 的计算值；若与系统启动页背景不同，遮罩在开头 150ms 内过渡过去。
+  系统启动页背景为浅色 `#F4F4F6` / 深色 `#1D242E`，与遮罩默认背景一致。
+- `getIntroMode()` 用 `localStorage` 键 `intro:lastFullDate` 记录日期：
+  每天首次启动返回 `full`（撕页 → 穿过 → 露出），当天再次启动返回 `quick`（仅淡入淡出）。
+  点击遮罩任意位置可立即结束动画。
+- `prefers-reduced-motion` 开启时退化为 200ms 淡入淡出。
 
 ### Hash 路由与页面
 
@@ -218,8 +226,13 @@ CSS `linear()` 弹簧曲线。转场由 Web Animations API 驱动：若用户在
   `prefers-color-scheme` 变化会在“跟随系统”模式下即时重新解析主题。
 - 状态栏通过官方 `@capacitor/status-bar` 同步背景和图标明暗；自有 `SystemBarsPlugin`
   同步 Android 导航栏，并把已解析主题、模式和所选主题镜像到原生偏好。
-  MainActivity 在 `super.onCreate` 前选择对应的八套 Splash 背景，因此冷启动页、状态栏、导航栏和
-  WebView 首帧使用同一背景色。
+  MainActivity 在 `super.onCreate` 前读取 `appearance_mode`：用户明确选择了浅色或深色时，
+  切到对应的固定启动页样式（`AppTheme.NoActionBarLaunch.Light` / `.Dark`，背景分别为
+  `#F4F4F6` / `#1D242E`）；选择跟随系统或尚无偏好时保持 manifest 的
+  `AppTheme.NoActionBarLaunch`，由 `values/` 与 `values-night/` 中的
+  `@color/splash_background` 随系统深浅变化。状态栏图标明暗同理由
+  `@bool/splash_light_system_bars` 在两个限定符目录下分别给出。
+  因此冷启动页、状态栏、导航栏和 WebView 首帧使用同一背景色。
 
 ### 列表页
 
@@ -252,9 +265,12 @@ CSS `linear()` 弹簧曲线。转场由 Web Animations API 驱动：若用户在
 - 删除、放弃、批量日历等确认操作统一使用 App 内 Material 3 弹窗；点击遮罩、取消
   按钮、Esc 或 Android 返回键均可关闭。
 - 空列表使用随项目提供的简笔画空白台历 SVG，并显示“还没有活动，点右下角的加号，
-  添加一张通知截图”。应用图标使用同一组提供的台历撕页 SVG，主色为烟雨主题的
-  `#565C78`，不含文字；
-  Android 自适应图标和各密度兼容图标均由该资源生成。
+  添加一张通知截图”。应用图标源自同一组台历撕页素材，主色 `#565C78`，不含文字；
+  自适应图标由 `res/drawable/ic_launcher_foreground.xml`（前景，108 画布）、
+  `@color/ic_launcher_background`（背景）和 `res/drawable/ic_launcher_monochrome.xml`
+  （Android 13+ 主题图标）组成，各密度兼容 PNG 同步生成。
+  前景层只保留 `drawable/` 一份：**不可存在 `drawable-v24/` 同名文件**，
+  该限定符优先级更高，会遮蔽新资源（minSdk 24，所有设备都会命中）。
 - 右下角悬浮加号使用 `env(safe-area-inset-bottom)` 避让手势导航区域；列表向下
   滚动时缩小隐藏，向上滚动时恢复。点击进入 `#/add`。
 
@@ -326,7 +342,9 @@ CSS `linear()` 弹簧曲线。转场由 Web Animations API 驱动：若用户在
 ### 网页运行时
 
 - `@capacitor/preferences` 在网页平台使用其 Web 实现，数据落到同源
-  `localStorage`，活动、待确认队列和每日启动标记均可持久保存。
+  `localStorage`（键名带 `CapacitorStorage.` 前缀），活动与待确认队列均可持久保存。
+  启动动画的每日播放标记由 `intro.js` 直接读写 `localStorage` 的
+  `intro:lastFullDate`，不经过 Preferences。
 - `@capacitor/app` 的 Android 返回键监听和 `@capacitor/splash-screen` 只在
   `isNative()` 为真时调用，浏览器不触发原生插件。
 - `extractEvents(imageDataUrl, now)` 在原生模式直连当前配置的识别服务；网页模式

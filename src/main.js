@@ -1,9 +1,10 @@
 import './style.css';
+import './intro.css';
 import emptyCalendarUrl from '../material/empty-calendar.svg?url';
 import { App as CapacitorApp } from '@capacitor/app';
 import { SplashScreen } from '@capacitor/splash-screen';
-import { Preferences } from '@capacitor/preferences';
 import { isNative } from './platform.js';
+import { getIntroMode, playIntro } from './intro.js';
 import {
   APPEARANCE_MODES,
   THEMES,
@@ -41,7 +42,6 @@ const app = document.querySelector('#app');
 const RECOGNITION_STATES = ['idle', 'compressing', 'uploading', 'recognizing', 'done', 'error'];
 const STAGE_STATES = ['compressing', 'uploading', 'recognizing', 'done'];
 const STATUS_MESSAGES = ['正在读取文字…', '正在识别时间…', '正在整理活动信息…'];
-const FULL_LAUNCH_DATE_KEY = 'full_launch_animation_date';
 const WORKING_STATES = ['compressing', 'uploading', 'recognizing'];
 const seenUncertainIds = new Set();
 
@@ -786,57 +786,19 @@ async function refresh() {
   [events, pendingEvents] = await Promise.all([loadEvents(), loadPendingEvents()]);
 }
 
-function launchMarkup() {
-  return `<div class="launch-screen" id="launch-screen">
-    <div class="launch-title">
-      <div class="launch-mark" aria-hidden="true">日</div>
-      <div class="launch-line">活动</div>
-    </div>
-  </div>`;
-}
-
-function playLaunchAnimation(full) {
-  return new Promise((resolve) => {
-    const screen = document.querySelector('#launch-screen');
-    if (!screen) {
-      resolve();
-      return;
-    }
-
-    let finished = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      screen.classList.add('launch-screen--skip');
-      setTimeout(resolve, 160);
-    };
-    screen.classList.add(full ? 'launch-screen--full' : 'launch-screen--quick');
-    screen.addEventListener('click', finish, { once: true });
-    const timer = setTimeout(() => {
-      finished = true;
-      resolve();
-    }, full ? 1500 : 500);
-  });
-}
-
 async function bootstrap() {
   await initializeTheme();
-  app.innerHTML = launchMarkup();
+  const mode = getIntroMode();
+  const themeBg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
   if (isNative()) {
     void SplashScreen.hide({ fadeOutDuration: 0 });
   }
 
-  const dataPromise = Promise.all([loadEvents(), loadPendingEvents()]);
-  const today = localDateKey();
-  const { value: lastFullDate } = await Preferences.get({ key: FULL_LAUNCH_DATE_KEY });
-  const playFull = lastFullDate !== today;
-  const animationPromise = playLaunchAnimation(playFull);
-  if (playFull) {
-    await Preferences.set({ key: FULL_LAUNCH_DATE_KEY, value: today });
-  }
-
-  [[events, pendingEvents]] = await Promise.all([dataPromise, animationPromise]);
+  const [data] = await Promise.all([
+    Promise.all([loadEvents(), loadPendingEvents()]),
+    playIntro({ mode, app, themeBg })
+  ]);
+  [events, pendingEvents] = data;
   ui.activeDraftId = pendingEvents[0]?.id || null;
   ui.booting = false;
   if (!['#/list', '#/add'].includes(location.hash) && !location.hash.startsWith('#/edit/')) {

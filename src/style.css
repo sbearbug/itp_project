@@ -33,21 +33,6 @@ body.settings-open #app { transform: translateX(min(84vw, 360px)); }
 .page--exit-right { animation: page-out-right 250ms ease-out both; pointer-events: none; }
 .list-page { padding-bottom: max(110px, calc(env(safe-area-inset-bottom) + 100px)); }
 
-.launch-screen { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; overflow: hidden; color: var(--text); background: var(--bg); cursor: pointer; }
-.launch-title { width: min(88vw, 560px); }
-.launch-kicker { margin-bottom: 10px; color: var(--btn); font-size: 12px; font-weight: 800; letter-spacing: .18em; }
-.launch-line { font-family: Georgia, "Songti SC", serif; font-size: clamp(48px, 14vw, 78px); line-height: .98; letter-spacing: -.05em; }
-.launch-line--two { color: var(--btn); }
-.launch-screen--full .launch-kicker,
-.launch-screen--full .launch-line { opacity: 0; transform: translateY(12px); }
-.launch-screen--full .launch-kicker { animation: launch-item-in 220ms ease-out 0ms both; }
-.launch-screen--full .launch-line--one { animation: launch-item-in 250ms ease-out 120ms both; }
-.launch-screen--full .launch-line--two { animation: launch-item-in 250ms ease-out 370ms both; }
-.launch-screen--full .launch-period { display: inline-block; animation: period-pop 220ms ease-out 620ms both; }
-.launch-screen--full .launch-title { animation: launch-title-out 250ms ease-out 1150ms both; }
-.launch-screen--quick .launch-title { animation: quick-launch 500ms ease-out both; }
-.launch-screen--skip .launch-title { animation: fade-out 150ms ease-out both !important; }
-
 .compact-header { display: flex; align-items: center; justify-content: space-between; min-height: 58px; margin-bottom: 22px; }
 .compact-header h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 31px; }
 .compact-header__actions { display: flex; align-items: center; gap: 8px; }
@@ -148,10 +133,6 @@ body.settings-open .settings-drawer { transform: translateX(0); }
 
 @keyframes page-in-right { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes page-out-right { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
-@keyframes launch-item-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes period-pop { 0% { opacity: 0; transform: scale(.55); } 70% { opacity: 1; transform: scale(1.14); } 100% { opacity: 1; transform: scale(1); } }
-@keyframes launch-title-out { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-16px); } }
-@keyframes quick-launch { 0% { opacity: 0; } 38% { opacity: 1; } 62% { opacity: 1; } 100% { opacity: 0; } }
 @keyframes ended-curtain-in { from { opacity: 0; transform: translateY(-18px) scaleY(.94); } to { opacity: 1; transform: translateY(0) scaleY(1); } }
 .shell { width: min(100%, 680px); min-height: 100vh; margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 20px max(36px, env(safe-area-inset-bottom)); }
 .hero { padding: 20px 4px 28px; }
@@ -312,11 +293,6 @@ button:not(:disabled):active, button.is-pressed { transform: scale(.96); box-sha
   .result-card--enter, .event-card--new, .uncertain-flash, .toast, .activity-editor--recognized,
   .page--fade-in, .page--enter-right { animation-name: fade-in; animation-duration: 180ms; transform: none; }
   .page--exit-right { animation-name: fade-out; animation-duration: 180ms; transform: none; }
-  .launch-screen--full .launch-kicker,
-  .launch-screen--full .launch-line,
-  .launch-screen--full .launch-period { animation-name: fade-in; transform: none; }
-  .launch-screen--full .launch-title { animation-name: fade-out; transform: none; }
-  .launch-screen--quick .launch-title { animation-name: quick-launch; transform: none; }
   .event-card { transition-property: opacity, max-height, padding, border-width; }
   .event-card--deleting { transform: none; }
   .event-card-row { transition-property: opacity, max-height, margin; }
@@ -556,17 +532,6 @@ body.settings-open #app { transform: none; }
 .page--fade-in { animation-timing-function: var(--motion-direct); }
 .page--enter-right, .page--exit-right { animation-timing-function: var(--motion-spring-soft); }
 
-.launch-screen { color: var(--text); background: var(--bg); }
-.launch-title { display: grid; justify-items: center; gap: 16px; width: auto; text-align: center; }
-.launch-mark { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 20px; color: var(--on-btn); background: var(--btn); font-size: 28px; font-weight: 700; }
-.launch-line { font-family: inherit; font-size: 34px; font-weight: 650; letter-spacing: 0; }
-.launch-screen--full .launch-mark,
-.launch-screen--full .launch-line { opacity: 0; transform: translateY(10px); }
-.launch-screen--full .launch-mark { animation: launch-item-in 240ms ease-out 80ms both; }
-.launch-screen--full .launch-line { animation: launch-item-in 240ms ease-out 250ms both; }
-.launch-screen--full .launch-title { animation: launch-title-out 220ms ease-out 1180ms both; }
-.launch-screen--quick .launch-title { animation: quick-launch 500ms ease-out both; }
-
 .compact-header,
 .secondary-header {
   position: sticky;
@@ -743,7 +708,10 @@ body.settings-open #app { transform: none; }
 .app-dialog h2 { font-size: 22px; font-weight: 680; line-height: 1.25; letter-spacing: -.01em; }
 .app-dialog p { font-size: 14px; line-height: 1.65; }
 
-.settings-scrim { background: color-mix(in srgb, var(--text) 34%, transparent); transition-timing-function: var(--motion-direct); }
+/* 设置弹层与遮罩的位移/透明度完全由 setSettingsProgress 的内联样式与 WAAPI 驱动，
+   这里必须禁用 CSS 过渡：否则动画结束取消 fill 时，内联值回退会再触发一次 CSS 过渡，
+   表现为弹层连着弹出两次。 */
+.settings-scrim { background: color-mix(in srgb, var(--text) 34%, transparent); transition: none; }
 .settings-drawer {
   top: auto;
   right: 0;
@@ -757,7 +725,7 @@ body.settings-open #app { transform: none; }
   background: var(--surface);
   box-shadow: 0 -4px 16px var(--divider);
   transform: translate(-50%, 100%);
-  transition: transform 250ms var(--motion-spring-soft), opacity 180ms var(--motion-direct);
+  transition: none;
   will-change: transform;
   overscroll-behavior: contain;
 }
@@ -912,8 +880,6 @@ button:not(:disabled):active, button.is-pressed,
   .theme-transition,
   .theme-transition * { transition-duration: 0ms !important; }
   .ripple-active::after { animation: none; }
-  .launch-screen--full .launch-mark,
-  .launch-screen--full .launch-line { animation-name: fade-in; transform: none; }
   .settings-drawer { transform: translate(-50%, 0); opacity: 0; }
   body.settings-open .settings-drawer { opacity: 1; }
   body.settings-closing .settings-drawer { opacity: 0; transform: translate(-50%, 0); }

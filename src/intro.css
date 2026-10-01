@@ -1,0 +1,35 @@
+/* 启动动画。--intro-icon-size 需与系统启动页图标在真机上的显示尺寸一致，按实测微调 */
+:root {
+  --intro-icon-size: 160px;   /* 与系统启动页图标的显示尺寸一致，按真机微调 */
+  --intro-icon-radius: 36px;  /* 与系统启动页图标的遮罩形状一致：圆形设为 50%，圆角方形按真机微调 */
+}
+
+.intro {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  background: var(--intro-bg, #F4F4F6);
+}
+
+.intro-icon {
+  position: relative;
+  width: var(--intro-icon-size);
+  height: var(--intro-icon-size);
+}
+
+.intro-base,
+.intro-page {
+  position: absolute;
+  inset: 0;
+  will-change: transform, opacity;
+}
+
+.intro-base { border-radius: var(--intro-icon-radius); overflow: hidden; } /* 只裁剪底座，纸页放大时不能被裁掉 */
+.intro-page { transform-origin: 48.8% 57.6%; } /* 纸页中心在图标中的位置 */
+
+.intro.is-done { display: none; }
+
+/* 动画开始前主界面先隐藏，由 intro.js 负责显示 */
+.app-root--intro-pending { opacity: 0; }

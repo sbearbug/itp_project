@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="app_background">#F4F4F6</color>
-    <color name="theme_ice_background">#F4FAFA</color>
-    <color name="theme_ice_dark_background">#111A30</color>
-    <color name="theme_graphite_background">#1D242E</color>
-    <color name="theme_moss_background">#F1F3EC</color>
-    <color name="theme_moss_dark_background">#161C11</color>
-    <color name="theme_sunny_background">#FFF8EE</color>
-    <color name="theme_sunny_dark_background">#1F1608</color>
-    <color name="theme_mist_background">#F4F4F6</color>
+    <!-- 启动页背景：values 为浅色，values-night 覆盖为深色，默认跟随系统深浅 -->
+    <color name="splash_background">#F4F4F6</color>
+    <!-- 应用内明确选择浅色/深色时使用的固定值，不随系统深浅变化 -->
+    <color name="splash_background_light">#F4F4F6</color>
+    <color name="splash_background_dark">#1D242E</color>
 </resources>
