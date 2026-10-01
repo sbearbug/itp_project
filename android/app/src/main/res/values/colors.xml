@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="app_background">#F3F0E6</color>
+    <color name="app_background">#F4F4F6</color>
+    <color name="theme_ice_background">#F4FAFA</color>
+    <color name="theme_ice_dark_background">#111A30</color>
+    <color name="theme_graphite_background">#1D242E</color>
+    <color name="theme_moss_background">#F1F3EC</color>
+    <color name="theme_sunny_background">#FFF8EE</color>
+    <color name="theme_mist_background">#F4F4F6</color>
 </resources>

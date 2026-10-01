@@ -1,4 +1,4 @@
-import { getApiConfig, getDefaultApiConfig } from './config.js';
+import { EVENT_CATEGORIES, getApiConfig, getDefaultApiConfig } from './config.js';
 import { isNative } from './platform.js';
 
 const DESCRIPTION_TEMPLATE = '活动：{title}\n时间：{start} 至 {end}\n地点：{location}\n报名截止：{deadline}\n报名方式：{signup}';
@@ -12,7 +12,7 @@ function parseJsonArray(content) {
 }
 
 function normalizeEvent(raw) {
-  const allowedUncertain = ['title', 'start', 'end', 'location', 'deadline', 'signup', 'description'];
+  const allowedUncertain = ['title', 'start', 'end', 'location', 'deadline', 'signup', 'description', 'category'];
   return {
     title: typeof raw.title === 'string' ? raw.title.trim() : '',
     start: typeof raw.start === 'string' && raw.start ? raw.start : null,
@@ -22,6 +22,7 @@ function normalizeEvent(raw) {
     deadline: typeof raw.deadline === 'string' && raw.deadline ? raw.deadline : null,
     signup: typeof raw.signup === 'string' && raw.signup ? raw.signup.trim() : null,
     description: typeof raw.description === 'string' && raw.description ? raw.description.trim() : null,
+    category: EVENT_CATEGORIES.includes(raw.category) ? raw.category : '其他',
     uncertain: Array.isArray(raw.uncertain)
       ? [...new Set(raw.uncertain.filter((field) => allowedUncertain.includes(field)))]
       : []
@@ -74,7 +75,7 @@ async function requestExtraction(userContent, now, sourceLabel) {
     '你是校园通知信息提取助手。当前本地时间是：' + localNow + '。',
     `读取用户提供的${sourceLabel}，提取其中所有独立活动，只输出 JSON 数组，不要输出解释或 Markdown。`,
     '每项严格使用以下结构：',
-    '{"title":"活动名称","start":"YYYY-MM-DDTHH:mm 或 null","end":"YYYY-MM-DDTHH:mm 或 null","allDay":false,"location":"地点或 null","deadline":"YYYY-MM-DDTHH:mm 或 null","signup":"报名方式、链接或二维码说明，或 null","description":"按指定模板总结","uncertain":["不确定的字段名"]}',
+    '{"title":"活动名称","start":"YYYY-MM-DDTHH:mm 或 null","end":"YYYY-MM-DDTHH:mm 或 null","allDay":false,"location":"地点或 null","deadline":"YYYY-MM-DDTHH:mm 或 null","signup":"报名方式、链接或二维码说明，或 null","description":"按指定模板总结","category":"讲座、竞赛、志愿、社团、招聘、其他之一","uncertain":["不确定的字段名"]}',
     '',
     '规则：',
     '1. 一张图有多个活动时拆成多项。',
@@ -83,7 +84,8 @@ async function requestExtraction(userContent, now, sourceLabel) {
     '4. 任何拿不准的字段填 null，并把字段名写进 uncertain；禁止猜测。',
     '5. description 必须严格按此模板生成，缺失值写“未提供”：',
     DESCRIPTION_TEMPLATE,
-    '6. description 中只总结截图明确提供的信息，不添加建议。'
+    '6. description 中只总结截图明确提供的信息，不添加建议。',
+    '7. category 必须从“讲座、竞赛、志愿、社团、招聘、其他”中选择；无法判断时使用“其他”，并将 category 加入 uncertain。'
   ].join('\n');
 
   const requestBody = JSON.stringify({

@@ -1,14 +1,29 @@
 import './style.css';
+import emptyCalendarUrl from '../material/empty-calendar.svg?url';
 import { App as CapacitorApp } from '@capacitor/app';
 import { SplashScreen } from '@capacitor/splash-screen';
 import { Preferences } from '@capacitor/preferences';
 import { isNative } from './platform.js';
+import {
+  APPEARANCE_MODES,
+  DARK_THEMES,
+  LIGHT_THEMES,
+  MODE_LABELS,
+  THEME_LABELS,
+  getAppearanceSettings,
+  initializeTheme,
+  setAppearanceMode,
+  setDarkTheme,
+  setLightTheme
+} from './theme.js';
 import { extractEvents, extractEventsFromText, compressImage } from './extract.js';
 import { addToCalendar, addDeadlineToCalendar, hasDeadlineCalendarEntry } from './calendar.js';
 import {
   API_BASE,
   API_KEY_LABEL,
   MODEL,
+  EVENT_CATEGORIES,
+  TERM_CONFIG,
   getCustomApiConfig,
   saveCustomApiConfig,
   clearCustomApiConfig
@@ -29,7 +44,6 @@ const RECOGNITION_STATES = ['idle', 'compressing', 'uploading', 'recognizing', '
 const STAGE_STATES = ['compressing', 'uploading', 'recognizing', 'done'];
 const STATUS_MESSAGES = ['正在读取文字…', '正在识别时间…', '正在整理活动信息…'];
 const FULL_LAUNCH_DATE_KEY = 'full_launch_animation_date';
-const APP_VERSION = '1.3';
 const WORKING_STATES = ['compressing', 'uploading', 'recognizing'];
 const seenUncertainIds = new Set();
 
@@ -69,9 +83,11 @@ const ui = {
   fabHidden: false,
   selectionMode: false,
   selectedEventIds: new Set(),
+  calendarSuccessIds: new Set(),
   openSwipeId: null,
   endedExpanded: false,
-  settingsOpen: false
+  settingsOpen: false,
+  settingsView: 'menu'
 };
 
 const escapeHtml = (value = '') => String(value)
@@ -116,7 +132,7 @@ function appDialog({ title = '请确认', message, confirmLabel = '确认', canc
       setTimeout(() => {
         overlay.remove();
         resolve(answer);
-      }, 180);
+      }, 220);
     };
     const onKeyDown = (event) => {
       if (event.key === 'Escape') finish(false);
@@ -159,8 +175,8 @@ function openWebApiKeyDialog({ required = false } = {}) {
     overlay.className = 'app-dialog-backdrop';
     overlay.innerHTML = `<form class="app-dialog api-key-dialog" aria-modal="true" aria-labelledby="api-key-dialog-title">
       <div class="app-dialog__mark">◆</div>
-      <h2 id="api-key-dialog-title">配置识别 API</h2>
-      <p>API Key 只会发送给本机服务器，并保存在当前文件夹的 <code>config.json</code> 中，不会写入网页代码。</p>
+      <h2 id="api-key-dialog-title">配置识别接口</h2>
+      <p>接口密钥只会发送给本机服务并保存在当前文件夹中，不会写入网页代码。</p>
       <label class="settings-field"><span>${escapeHtml(API_KEY_LABEL)}</span>
         <input name="apiKey" type="password" placeholder="sk-..." autocomplete="off" required autofocus>
         <small>保存后立即可以上传截图识别</small>
@@ -183,7 +199,7 @@ function openWebApiKeyDialog({ required = false } = {}) {
       setTimeout(() => {
         overlay.remove();
         resolve(saved);
-      }, 180);
+      }, 220);
     };
     const onKeyDown = (event) => {
       if (!required && event.key === 'Escape') finish(false);
@@ -201,7 +217,7 @@ function openWebApiKeyDialog({ required = false } = {}) {
       const errorRoot = overlay.querySelector('.api-key-dialog__error');
       const apiKey = input.value.trim();
       if (!apiKey) {
-        errorRoot.textContent = '请填写 API Key';
+        errorRoot.textContent = '请填写接口密钥';
         input.focus();
         return;
       }
@@ -242,43 +258,119 @@ async function renderSettingsDrawer() {
   const native = isNative();
   const custom = native ? await getCustomApiConfig() : null;
   const webConfigured = native ? null : await getWebApiStatus();
+  const appearance = getAppearanceSettings();
   if (!settingsRoot) {
     settingsRoot = document.createElement('div');
     settingsRoot.id = 'settings-root';
     document.body.appendChild(settingsRoot);
   }
+
+  const backHeader = (title, description) => `<header class="settings-header settings-header--with-back">
+    <button class="icon-button settings-back" type="button" data-settings-view="menu" aria-label="返回设置菜单">←</button>
+    <div><h2>${title}</h2><p>${description}</p></div>
+  </header>`;
+
+  const menuMarkup = `<header class="settings-header">
+      <h2>设置</h2>
+      <p>调整外观或识别接口</p>
+    </header>
+    <div class="settings-menu">
+      <button class="settings-menu-item" type="button" data-settings-view="appearance">
+        <span class="settings-menu-item__icon">◐</span>
+        <span><b>外观</b><small>${MODE_LABELS[appearance.mode]} · ${THEME_LABELS[appearance.resolvedTheme]}</small></span>
+        <i>›</i>
+      </button>
+      <button class="settings-menu-item" type="button" data-settings-view="api">
+        <span class="settings-menu-item__icon">⌁</span>
+        <span><b>识别接口</b><small>${native ? (custom ? '正在使用自定义接口' : '正在使用内置演示接口') : (webConfigured ? '接口密钥已保存在本机' : '尚未配置接口密钥')}</small></span>
+        <i>›</i>
+      </button>
+    </div>`;
+
+  const appearanceMarkup = `${backHeader('外观', '主题会立即应用并保存在当前设备')}
+    <section class="appearance-section">
+      <h3>深浅模式</h3>
+      <div class="appearance-mode" role="group" aria-label="深浅模式">
+        ${APPEARANCE_MODES.map((mode) => `<button type="button" data-appearance-mode="${mode}" aria-pressed="${appearance.mode === mode}">${MODE_LABELS[mode]}</button>`).join('')}
+      </div>
+    </section>
+    <section class="appearance-section">
+      <h3>浅色主题</h3>
+      <div class="theme-options">
+        ${LIGHT_THEMES.map((theme) => `<button class="theme-option" type="button" data-light-theme="${theme}" aria-pressed="${appearance.lightTheme === theme}">
+          <span class="theme-option__preview" data-theme-preview="${theme}">
+            <i></i><i></i><i></i><i></i>
+          </span>
+          <span>${THEME_LABELS[theme]}</span>
+          <b>${appearance.lightTheme === theme ? '✓' : ''}</b>
+        </button>`).join('')}
+      </div>
+    </section>
+    <section class="appearance-section">
+      <h3>深色主题</h3>
+      <div class="theme-options">
+        ${DARK_THEMES.map((theme) => `<button class="theme-option" type="button" data-dark-theme="${theme}" aria-pressed="${appearance.darkTheme === theme}">
+          <span class="theme-option__preview" data-theme-preview="${theme}">
+            <i></i><i></i><i></i><i></i>
+          </span>
+          <span>${THEME_LABELS[theme]}</span>
+          <b>${appearance.darkTheme === theme ? '✓' : ''}</b>
+        </button>`).join('')}
+      </div>
+      <p class="settings-note">系统或手动切换深浅模式时，会使用对应分组中选定的主题。</p>
+    </section>`;
+
+  const apiMarkup = `${backHeader('识别接口', native ? (custom ? '正在使用自定义接口' : '正在使用内置演示接口') : (webConfigured ? '接口密钥已保存在本机' : '尚未配置接口密钥'))}
+    ${native ? `<form class="settings-form" id="api-settings-form">
+      <label class="settings-field"><span>接口地址</span>
+        <input name="apiBase" type="url" inputmode="url" value="${escapeHtml(custom?.apiBase || API_BASE)}" autocomplete="off">
+        <small>填写与通用对话补全格式兼容的基础地址</small>
+      </label>
+      <label class="settings-field"><span>模型名称</span>
+        <input name="model" type="text" value="${escapeHtml(custom?.model || MODEL)}" autocomplete="off">
+      </label>
+      <label class="settings-field"><span>接口密钥</span>
+        <input name="apiKey" type="password" value="${escapeHtml(custom?.apiKey || '')}" placeholder="输入接口密钥" autocomplete="off">
+        <small>仅保存在当前设备，保存后下次识别生效</small>
+      </label>
+      <div class="settings-actions">
+        <button class="button button--secondary" id="default-api-button" type="button" ${custom ? '' : 'disabled'}>恢复内置</button>
+        <button class="button button--primary" id="save-api-button" type="submit">保存设置</button>
+      </div>
+    </form>
+    <p class="settings-note">自定义接口需要兼容 <code>/chat/completions</code>，并支持图片输入。</p>` : `<div class="settings-form">
+      <p class="settings-note">接口密钥由本机服务保存，网页不会显示或读回已保存的密钥。</p>
+      <button class="button button--primary" id="web-api-key-button" type="button">${webConfigured ? '更新接口密钥' : '填写接口密钥'}</button>
+    </div>`}`;
+
+  const content = ui.settingsView === 'appearance'
+    ? appearanceMarkup
+    : ui.settingsView === 'api'
+      ? apiMarkup
+      : menuMarkup;
   settingsRoot.innerHTML = `<div class="settings-scrim" data-settings-close></div>
     <aside class="settings-drawer" aria-label="设置" aria-hidden="${!ui.settingsOpen}">
       <div class="settings-drawer__handle"></div>
-      <header class="settings-header">
-        <span>SETTINGS · V${APP_VERSION}</span>
-        <h2>识别设置</h2>
-        <p>${native ? (custom ? '正在使用你的自定义 API' : '正在使用内置 Demo API') : (webConfigured ? 'API Key 已保存在本机' : '尚未配置 API Key')}</p>
-      </header>
-      ${native ? `<form class="settings-form" id="api-settings-form">
-        <label class="settings-field"><span>API 地址</span>
-          <input name="apiBase" type="url" inputmode="url" value="${escapeHtml(custom?.apiBase || API_BASE)}" autocomplete="off">
-          <small>填写 OpenAI 兼容接口的基础地址</small>
-        </label>
-        <label class="settings-field"><span>模型名称</span>
-          <input name="model" type="text" value="${escapeHtml(custom?.model || MODEL)}" autocomplete="off">
-        </label>
-        <label class="settings-field"><span>API Key</span>
-          <input name="apiKey" type="password" value="${escapeHtml(custom?.apiKey || '')}" placeholder="输入你的 API Key" autocomplete="off">
-          <small>仅保存在当前设备，保存后下次识别生效</small>
-        </label>
-        <div class="settings-actions">
-          <button class="button button--secondary" id="default-api-button" type="button" ${custom ? '' : 'disabled'}>恢复内置</button>
-          <button class="button button--primary" id="save-api-button" type="submit">保存设置</button>
-        </div>
-      </form>
-      <p class="settings-note">自定义接口需要兼容 <code>/chat/completions</code>，并支持图片输入。</p>` : `<div class="settings-form">
-        <p class="settings-note">API Key 由本地 Python 服务器保存，网页不会显示或读回已保存的 Key。</p>
-        <button class="button button--primary" id="web-api-key-button" type="button">${webConfigured ? '更新 API Key' : '填写 API Key'}</button>
-      </div>`}
+      ${content}
     </aside>`;
 
   settingsRoot.querySelector('[data-settings-close]').addEventListener('click', closeSettingsDrawer);
+  settingsRoot.querySelectorAll('[data-settings-view]').forEach((button) => button.addEventListener('click', async () => {
+    ui.settingsView = button.dataset.settingsView;
+    await renderSettingsDrawer();
+  }));
+  settingsRoot.querySelectorAll('[data-appearance-mode]').forEach((button) => button.addEventListener('click', async () => {
+    await setAppearanceMode(button.dataset.appearanceMode);
+    await renderSettingsDrawer();
+  }));
+  settingsRoot.querySelectorAll('[data-light-theme]').forEach((button) => button.addEventListener('click', async () => {
+    await setLightTheme(button.dataset.lightTheme);
+    await renderSettingsDrawer();
+  }));
+  settingsRoot.querySelectorAll('[data-dark-theme]').forEach((button) => button.addEventListener('click', async () => {
+    await setDarkTheme(button.dataset.darkTheme);
+    await renderSettingsDrawer();
+  }));
   settingsRoot.querySelector('#api-settings-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -290,11 +382,11 @@ async function renderSettingsDrawer() {
     try {
       url = new URL(apiBase);
     } catch {
-      await showNotice('请输入完整有效的 API 地址，例如 https://api.example.com/v1。');
+      await showNotice('请输入完整有效的接口地址，例如 https://api.example.com/v1。');
       return;
     }
     if (!['http:', 'https:'].includes(url.protocol) || !model || !apiKey) {
-      await showNotice('API 地址、模型名称和 API Key 都需要填写完整。');
+      await showNotice('接口地址、模型名称和接口密钥都需要填写完整。');
       return;
     }
     const button = settingsRoot.querySelector('#save-api-button');
@@ -302,18 +394,18 @@ async function renderSettingsDrawer() {
     await saveCustomApiConfig({ apiBase, model, apiKey });
     ui.actionBusy = null;
     await renderSettingsDrawer();
-    showToast('已使用自定义 API');
+    showToast('已使用自定义接口');
   });
   settingsRoot.querySelector('#default-api-button')?.addEventListener('click', async () => {
     await clearCustomApiConfig();
     await renderSettingsDrawer();
-    showToast('已恢复内置 API');
+    showToast('已恢复内置接口');
   });
   settingsRoot.querySelector('#web-api-key-button')?.addEventListener('click', async () => {
     closeSettingsDrawer();
     await wait(250);
     if (await openWebApiKeyDialog()) {
-      showToast('API Key 已保存');
+      showToast('接口密钥已保存');
     }
   });
 
@@ -365,16 +457,14 @@ function setupPressFeedback() {
   if (pressFeedbackInstalled) return;
   pressFeedbackInstalled = true;
   let pressed = null;
-  let startX = 0;
-  let startY = 0;
-  let pressedAt = 0;
+  let rippleTimer = null;
 
-  const release = (immediate = false) => {
+  const release = () => {
     const target = pressed;
     pressed = null;
     if (!target) return;
-    const delay = immediate ? 0 : Math.max(0, 110 - (performance.now() - pressedAt));
-    window.setTimeout(() => target.classList.remove('is-pressed'), delay);
+    window.clearTimeout(rippleTimer);
+    rippleTimer = window.setTimeout(() => target.classList.remove('ripple-active'), 420);
   };
 
   document.addEventListener('pointerdown', (event) => {
@@ -383,33 +473,37 @@ function setupPressFeedback() {
       ? event.target.closest('button:not(:disabled), [role="button"], .add-picker__button, .capture-button')
       : null;
     if (!target) return;
-    release(true);
+    release();
     pressed = target;
-    startX = event.clientX;
-    startY = event.clientY;
-    pressedAt = performance.now();
-    target.classList.add('is-pressed');
+    const bounds = target.getBoundingClientRect();
+    target.style.setProperty('--ripple-x', `${event.clientX - bounds.left}px`);
+    target.style.setProperty('--ripple-y', `${event.clientY - bounds.top}px`);
+    target.classList.remove('ripple-active');
+    void target.offsetWidth;
+    target.classList.add('ripple-active');
   }, true);
-  document.addEventListener('pointermove', (event) => {
-    if (!pressed) return;
-    if (Math.hypot(event.clientX - startX, event.clientY - startY) > 9) release(true);
-  }, true);
-  document.addEventListener('pointerup', () => release(), true);
-  document.addEventListener('pointercancel', () => release(true), true);
-  window.addEventListener('blur', () => release(true));
+  document.addEventListener('pointerup', release, true);
+  document.addEventListener('pointercancel', release, true);
+  window.addEventListener('blur', release);
 }
 
 async function openSettingsDrawer() {
-  if (ui.settingsOpen || closeActiveDialog) return;
+  if (ui.settingsOpen || closeActiveDialog || document.body.classList.contains('settings-closing')) return;
   ui.settingsOpen = true;
+  ui.settingsView = 'menu';
+  document.body.classList.remove('settings-open');
   await renderSettingsDrawer();
-  requestAnimationFrame(() => document.body.classList.add('settings-open'));
+  await nextPaint();
+  document.body.classList.add('settings-open');
 }
 
-function closeSettingsDrawer() {
+async function closeSettingsDrawer() {
   if (!ui.settingsOpen) return;
   ui.settingsOpen = false;
+  document.body.classList.add('settings-closing');
   document.body.classList.remove('settings-open');
+  await wait(250);
+  document.body.classList.remove('settings-closing');
   settingsRoot?.querySelector('.settings-drawer')?.setAttribute('aria-hidden', 'true');
 }
 
@@ -495,11 +589,12 @@ function statusLabel(status) {
   return { interested: '感兴趣', registered: '已报名', skipped: '不参加' }[status] || '感兴趣';
 }
 
+function categoryOf(event) {
+  return EVENT_CATEGORIES.includes(event.category) ? event.category : '其他';
+}
+
 function calendarSuccessMessage(event) {
-  if (hasDeadlineCalendarEntry(event)) {
-    return isNative() ? '已分别打开活动和报名截止日历' : '已分别下载两个日历文件';
-  }
-  return isNative() ? '已打开系统日历' : '已下载日历文件';
+  return '已加入日历';
 }
 
 function parseRoute() {
@@ -516,9 +611,8 @@ async function refresh() {
 function launchMarkup() {
   return `<div class="launch-screen" id="launch-screen">
     <div class="launch-title">
-      <div class="launch-kicker">CAMPUS ACTION</div>
-      <div class="launch-line launch-line--one">把通知，</div>
-      <div class="launch-line launch-line--two">变成行动<span class="launch-period">。</span></div>
+      <div class="launch-mark" aria-hidden="true">日</div>
+      <div class="launch-line">活动</div>
     </div>
   </div>`;
 }
@@ -549,6 +643,7 @@ function playLaunchAnimation(full) {
 }
 
 async function bootstrap() {
+  await initializeTheme();
   app.innerHTML = launchMarkup();
   if (isNative()) {
     void SplashScreen.hide({ fadeOutDuration: 0 });
@@ -624,9 +719,7 @@ async function handleBack() {
     return;
   }
   if (ui.selectionMode) {
-    ui.selectionMode = false;
-    ui.selectedEventIds.clear();
-    await renderListPage();
+    await exitSelectionMode();
     return;
   }
   CapacitorApp.exitApp();
@@ -688,6 +781,87 @@ function deadlineBadge(event, now = new Date()) {
   return `<span class="deadline-badge">${label}</span>`;
 }
 
+function isUrgentDeadline(event, now = new Date()) {
+  if (!event.deadline) return false;
+  const difference = new Date(event.deadline).getTime() - now.getTime();
+  return Number.isFinite(difference) && difference >= 0 && difference <= 24 * 60 * 60 * 1000;
+}
+
+function eventDateParts(event) {
+  if (!event.start) return { month: '日期', day: '—', weekday: '待定' };
+  const date = new Date(event.start);
+  if (Number.isNaN(date.getTime())) return { month: '日期', day: '—', weekday: '待定' };
+  return {
+    month: `${date.getMonth() + 1}月`,
+    day: String(date.getDate()).padStart(2, '0'),
+    weekday: new Intl.DateTimeFormat('zh-CN', { weekday: 'short' }).format(date)
+  };
+}
+
+function startOfLocalDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function termWeekNumber(date = new Date()) {
+  const month = date.getMonth() + 1;
+  const startYear = month < 6 ? date.getFullYear() - 1 : date.getFullYear();
+  const termStart = new Date(startYear, TERM_CONFIG.startMonth - 1, TERM_CONFIG.startDay);
+  const termEnd = new Date(termStart);
+  termEnd.setDate(termEnd.getDate() + TERM_CONFIG.totalWeeks * 7);
+  const today = startOfLocalDay(date);
+  if (today < termStart || today >= termEnd) return null;
+  return Math.floor((today.getTime() - termStart.getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1;
+}
+
+function todayCalendarMarkup(now = new Date()) {
+  const week = termWeekNumber(now);
+  const weekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(now);
+  return `<section class="today-calendar" aria-label="今天">
+    <span class="today-calendar__binding" aria-hidden="true"><i></i><i></i></span>
+    <div class="today-calendar__date">
+      <span>今天</span>
+      <strong>${String(now.getDate()).padStart(2, '0')}</strong>
+    </div>
+    <div class="today-calendar__detail">
+      <b>${weekday}</b>
+      <span>${now.getMonth() + 1}月${now.getDate()}日</span>
+      ${week ? `<small>${TERM_CONFIG.label}第${week}周</small>` : ''}
+    </div>
+  </section>`;
+}
+
+function groupUpcomingEvents(items, now = new Date()) {
+  const today = startOfLocalDay(now);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dayAfterTomorrow = new Date(today);
+  dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 2);
+  const weekEnd = new Date(today);
+  const mondayIndex = (today.getDay() + 6) % 7;
+  weekEnd.setDate(weekEnd.getDate() + (7 - mondayIndex));
+  const groups = [
+    { label: '今天', events: [] },
+    { label: '明天', events: [] },
+    { label: '本周', events: [] },
+    { label: '以后', events: [] }
+  ];
+  for (const event of items) {
+    const start = event.start ? new Date(event.start) : null;
+    if (!start || Number.isNaN(start.getTime()) || start >= weekEnd) groups[3].events.push(event);
+    else if (start >= dayAfterTomorrow) groups[2].events.push(event);
+    else if (start >= tomorrow) groups[1].events.push(event);
+    else groups[0].events.push(event);
+  }
+  return groups.filter((group) => group.events.length);
+}
+
+function activityGroupsMarkup(items, now) {
+  return groupUpcomingEvents(items, now).map((group) => `<section class="activity-group">
+    <h2 class="activity-group__title">${group.label}</h2>
+    <div class="event-list">${group.events.map((event) => listCard(event)).join('')}</div>
+  </section>`).join('');
+}
+
 function isEnded(event, now = new Date()) {
   const endValue = event.end || event.start;
   if (!endValue) return false;
@@ -706,6 +880,10 @@ function sortByStart(left, right) {
 function listCard(event, ended = false, endedIndex = 0) {
   const isNew = ui.newItemIds.includes(event.id);
   const selected = ui.selectedEventIds.has(event.id);
+  const date = eventDateParts(event);
+  const urgent = isUrgentDeadline(event);
+  const calendarSuccess = ui.calendarSuccessIds.has(event.id);
+  const dateClass = urgent ? 'event-date--urgent' : '';
   const cardAttribute = ui.selectionMode ? `data-select-id="${event.id}"` : `data-event-id="${event.id}"`;
   return `<div class="event-card-row ${ui.selectionMode ? 'event-card-row--selection' : ''} ${ended ? 'event-card-row--ended' : ''} ${ui.openSwipeId === event.id ? 'event-card-row--open' : ''}" data-row-id="${event.id}" ${ended ? `style="--ended-index:${endedIndex}"` : ''}>
   ${ui.selectionMode ? '' : `<div class="event-card-actions" aria-label="活动快捷操作">
@@ -713,15 +891,25 @@ function listCard(event, ended = false, endedIndex = 0) {
     <button class="event-swipe-action event-swipe-action--delete" type="button" data-delete-id="${event.id}">删除</button>
   </div>`}
   <button class="event-card ${ended ? 'event-card--ended' : ''} ${isNew ? 'event-card--new' : ''} ${selected ? 'event-card--selected' : ''}" ${cardAttribute}>
-    <span class="event-card__top">
-      ${ui.selectionMode ? `<span class="selection-check" aria-hidden="true">${selected ? '✓' : ''}</span>` : ''}
-      <span class="event-card__title">${escapeHtml(event.title || '未命名活动')}</span>
-      <span class="pill pill--${event.status}">${statusLabel(event.status)}</span>
+    ${ui.selectionMode ? `<span class="selection-check" aria-hidden="true">${selected ? '✓' : ''}</span>` : ''}
+    <span class="event-date ${dateClass} ${calendarSuccess ? 'event-date--tear' : ''}" data-date-id="${event.id}" aria-hidden="true">
+      <span class="event-date__success">✓</span>
+      <span class="event-date__page">
+        <span class="event-date__month">${date.month}</span>
+        <strong class="event-date__day">${date.day}</strong>
+        <span class="event-date__weekday">${date.weekday}</span>
+      </span>
+      <span class="event-date__tear-sheet"></span>
     </span>
-    <span class="event-card__meta">${escapeHtml(formatDateTime(event.start, event.allDay))}</span>
-    <span class="event-card__bottom">
+    <span class="event-card__content">
+      <span class="event-card__title">${escapeHtml(event.title || '未命名活动')}</span>
+      <span class="event-card__meta">${escapeHtml(formatDateTime(event.start, event.allDay))}</span>
       <span class="event-card__meta">${escapeHtml(event.location || '地点待确认')}</span>
-      ${deadlineBadge(event)}
+      <span class="event-card__status-row">
+        <span class="event-category">${categoryOf(event)}</span>
+        <span class="pill pill--${event.status}">${statusLabel(event.status)}</span>
+        ${deadlineBadge(event)}
+      </span>
     </span>
   </button>
   </div>`;
@@ -738,6 +926,21 @@ function updateBulkToolbar() {
   const buttons = document.querySelectorAll('#bulk-delete-button, #bulk-calendar-button');
   if (label) label.textContent = `已选择 ${count} 项`;
   buttons.forEach((button) => { button.disabled = count === 0; });
+}
+
+function queueCalendarTear(ids) {
+  ids.forEach((id) => ui.calendarSuccessIds.add(id));
+}
+
+async function exitSelectionMode() {
+  const toolbar = document.querySelector('.bulk-toolbar');
+  if (toolbar) {
+    toolbar.classList.add('bulk-toolbar--leaving');
+    await wait(220);
+  }
+  ui.selectionMode = false;
+  ui.selectedEventIds.clear();
+  await renderListPage();
 }
 
 async function animateListDeletion(ids) {
@@ -898,12 +1101,15 @@ async function renderListPage() {
 
   app.innerHTML = `<main class="${pageClass(`list-page ${ui.selectionMode ? 'list-page--manage' : ''}`)}">
     <header class="compact-header">
-      <h1>我的活动</h1>
+      <h1>活动</h1>
       <div class="compact-header__actions">
-        <span class="count-badge">${events.length}</span>
+        <span class="count-badge">${events.length} 项</span>
         ${events.length ? `<button class="manage-button" id="manage-button" type="button">${ui.selectionMode ? '完成' : '管理'}</button>` : ''}
+        <button class="icon-button app-bar-action" id="settings-button" type="button" aria-label="打开菜单">⋮</button>
       </div>
     </header>
+
+    ${todayCalendarMarkup(now)}
 
     ${pendingEvents.length ? `<button class="pending-resume" id="resume-pending">
       <span>有 ${pendingEvents.length} 个活动等待确认</span><b>继续 →</b>
@@ -911,10 +1117,10 @@ async function renderListPage() {
 
     <section class="activity-list">
       ${upcoming.length
-        ? upcoming.map((event) => listCard(event)).join('')
+        ? activityGroupsMarkup(upcoming, now)
         : `<div class="empty-state empty-state--list">
-            <p>选择校园通知截图，确认信息后写入系统日历</p>
-            <small>点击右下角的加号开始</small>
+            <img src="${emptyCalendarUrl}" alt="空白台历页">
+            <p>还没有活动，点右下角的加号，添加一张通知截图</p>
           </div>`}
     </section>
 
@@ -937,6 +1143,7 @@ async function renderListPage() {
   </main>`;
 
   document.querySelector('#add-button')?.addEventListener('click', () => navigateTo('#/add'));
+  document.querySelector('#settings-button')?.addEventListener('click', openSettingsDrawer);
   document.querySelector('#ended-toggle')?.addEventListener('click', () => {
     ui.endedExpanded = !ui.endedExpanded;
     const button = document.querySelector('#ended-toggle');
@@ -946,15 +1153,15 @@ async function renderListPage() {
   });
   document.querySelector('#manage-button')?.addEventListener('click', async () => {
     await wait(90);
-    ui.selectionMode = !ui.selectionMode;
-    ui.selectedEventIds.clear();
-    await renderListPage();
+    if (ui.selectionMode) {
+      await exitSelectionMode();
+    } else {
+      ui.selectionMode = true;
+      ui.selectedEventIds.clear();
+      await renderListPage();
+    }
   });
-  document.querySelector('#cancel-selection')?.addEventListener('click', async () => {
-    ui.selectionMode = false;
-    ui.selectedEventIds.clear();
-    await renderListPage();
-  });
+  document.querySelector('#cancel-selection')?.addEventListener('click', exitSelectionMode);
   document.querySelector('#resume-pending')?.addEventListener('click', () => {
     ui.activeDraftId = pendingEvents[0]?.id || null;
     navigateTo('#/add');
@@ -995,6 +1202,7 @@ async function renderListPage() {
     try {
       await openSavedEventInCalendar(event);
       await refresh();
+      queueCalendarTear([event.id]);
       ui.actionBusy = null;
       await renderListPage();
       showToast(calendarSuccessMessage(event));
@@ -1024,10 +1232,9 @@ async function renderListPage() {
         await openSavedEventInCalendar(selected[index], index < selected.length - 1);
       }
       await refresh();
-      ui.selectionMode = false;
-      ui.selectedEventIds.clear();
+      queueCalendarTear(selected.map((event) => event.id));
       ui.actionBusy = null;
-      await renderListPage();
+      await exitSelectionMode();
       showToast(`已处理 ${selected.length} 个活动`);
     } catch (error) {
       await refresh();
@@ -1042,13 +1249,20 @@ async function renderListPage() {
     setActionBusy('deleting', document.querySelector('#bulk-delete-button'), '删除中…');
     await animateListDeletion(ids);
     await deleteSavedEvents(ids);
-    ui.selectionMode = false;
-    ui.selectedEventIds.clear();
     ui.actionBusy = null;
-    await renderListPage();
+    await exitSelectionMode();
     showToast(`已删除 ${ids.length} 个活动`);
   });
   bindListScroll();
+  if (ui.calendarSuccessIds.size) {
+    const animatedIds = [...ui.calendarSuccessIds];
+    setTimeout(() => {
+      animatedIds.forEach((id) => {
+        document.querySelector(`[data-date-id="${CSS.escape(id)}"]`)?.classList.remove('event-date--tear');
+        ui.calendarSuccessIds.delete(id);
+      });
+    }, 430);
+  }
   if (ui.newItemIds.length) setTimeout(() => { ui.newItemIds = []; }, 400);
 }
 
@@ -1192,6 +1406,9 @@ function eventFormMarkup(event, options) {
     ${isAdd ? `<div class="recognized-heading"><span>识别到 ${total} 个活动</span><b>${index + 1} / ${total}</b></div>` : ''}
     <form id="event-form" class="editor-form" data-mode="${mode}" data-id="${event.id}">
       ${editorField('活动名称', 'title', event.title, event, 'text', flash)}
+      <label class="${fieldClass(event, 'category', flash)}"><span>活动类型${event.uncertain?.includes('category') ? '<b>请核对</b>' : ''}</span><select name="category">
+        ${EVENT_CATEGORIES.map((category) => `<option value="${category}" ${categoryOf(event) === category ? 'selected' : ''}>${category}</option>`).join('')}
+      </select></label>
       <label class="toggle-row"><span><strong>全天活动</strong><small>通知只给出日期时开启</small></span><input name="allDay" type="checkbox" ${event.allDay ? 'checked' : ''}></label>
       <div class="time-grid">
         ${editorField('开始', 'start', inputTime(event.start), event, timeType, flash)}
@@ -1242,6 +1459,7 @@ function getFormPatch(form, original) {
     deadline: valueOrNull('deadline'),
     signup: valueOrNull('signup'),
     description: valueOrNull('description'),
+    category: EVENT_CATEGORIES.includes(data.get('category')) ? String(data.get('category')) : '其他',
     status: String(data.get('status') || original.status || 'interested'),
     uncertain: (original.uncertain || []).filter((field) => !touched.has(field))
   };
@@ -1358,6 +1576,7 @@ function bindEventForm(event, options) {
         const saved = { ...event, ...patch };
         await openSavedEventInCalendar(saved);
         await refresh();
+        queueCalendarTear([event.id]);
         ui.actionBusy = null;
         formError = '';
         showToast(calendarSuccessMessage(saved));

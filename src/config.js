@@ -1,5 +1,14 @@
 import { Preferences } from '@capacitor/preferences';
 
+export const TERM_CONFIG = Object.freeze({
+  label: '秋学期',
+  startMonth: 9,
+  startDay: 14,
+  totalWeeks: 16
+});
+
+export const EVENT_CATEGORIES = Object.freeze(['讲座', '竞赛', '志愿', '社团', '招聘', '其他']);
+
 export const API_PROVIDERS = Object.freeze({
   glm: Object.freeze({
     id: 'glm',
@@ -32,7 +41,7 @@ export const API_BASE = ACTIVE_CONFIG.apiBase;
 export const API_URL = ACTIVE_CONFIG.apiUrl;
 export const MODEL = ACTIVE_CONFIG.model;
 export const API_KEY = ACTIVE_CONFIG.apiKey;
-export const API_KEY_LABEL = `${ACTIVE_CONFIG.label} API KEY`;
+export const API_KEY_LABEL = `${ACTIVE_CONFIG.label} 接口密钥`;
 const CUSTOM_API_CONFIG_KEY = 'custom_api_config';
 
 function normalizeBase(value) {
