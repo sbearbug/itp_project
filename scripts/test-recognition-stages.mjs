@@ -31,6 +31,7 @@ for (const native of [true, false]) {
     window: { dispatchEvent: (event) => events.push(event.detail), addEventListener() {}, removeEventListener() {} }
   });
   vm.runInContext(section(extract, 'async function requestExtraction(', 'export async function extractEvents('), context);
+  vm.runInContext(section(extract, 'function hasActivityTitle(', 'function pureImageBase64('), context);
   await context.requestExtraction('测试通知', new Date(), '文字');
   assert.deepEqual(events, ['recognizing']);
 }

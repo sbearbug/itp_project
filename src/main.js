@@ -65,7 +65,6 @@ let toastTimer = null;
 let listScrollHandler = null;
 let settingsSheet = null;
 let settingsRoot = null;
-let settingsGestureInstalled = false;
 let pressFeedbackInstalled = false;
 let activeSettingsViewAnimation = null;
 let activePageAnimation = null;
@@ -729,8 +728,6 @@ function setupPressFeedback() {
   });
 }
 
-function readSettingsProgress() { return settingsSheet?.progress() || 0; }
-function setSettingsProgress(progress) { settingsSheet?.setProgress(progress); }
 async function animateSettingsProgress(target) {
   return settingsSheet ? settingsSheet.animateTo(target) : false;
 }
@@ -761,89 +758,6 @@ async function closeSettingsDrawer() {
   if (settingsSheet) await settingsSheet.close(null);
 }
 
-function setupSettingsGesture() {
-  if (settingsGestureInstalled) return;
-  settingsGestureInstalled = true;
-  let gesture = null;
-  let suppressNextClick = false;
-
-  const canStart = (target) => {
-    if (ui.settingsOpen || hasOpenOverlay()) return false;
-    if (!(target instanceof Element)) return true;
-    return !target.closest('.app-dialog, .settings-drawer, .event-card-row--open, .month-calendar');
-  };
-
-  document.addEventListener('pointerdown', (event) => {
-    if (!event.isPrimary || event.button > 0 || !canStart(event.target)) return;
-    gesture = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      latestX: event.clientX,
-      preparing: null,
-      ready: false,
-      horizontal: false,
-      samples: [{ x: event.clientX, time: performance.now() }]
-    };
-  });
-  document.addEventListener('pointermove', (event) => {
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    gesture.latestX = event.clientX;
-    const deltaX = event.clientX - gesture.startX;
-    const deltaY = event.clientY - gesture.startY;
-    if (!gesture.horizontal && (Math.abs(deltaX) > 9 || Math.abs(deltaY) > 9)) {
-      if (deltaX <= 0 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.15) {
-        gesture = null;
-        return;
-      }
-      gesture.horizontal = true;
-    }
-    if (!gesture.horizontal) return;
-    if (event.cancelable) event.preventDefault();
-    if (!gesture.preparing) {
-      const preparingGesture = gesture;
-      gesture.preparing = prepareSettingsDrawer(0).then((ready) => {
-        if (!ready) return false;
-        preparingGesture.ready = true;
-        const progress = rubberBand((preparingGesture.latestX - preparingGesture.startX) / 220, 0, 1, 0.16);
-        setSettingsProgress(progress);
-        return true;
-      });
-    }
-    if (gesture.ready) setSettingsProgress(rubberBand(deltaX / 220, 0, 1, 0.16));
-    const now = performance.now();
-    gesture.samples.push({ x: event.clientX, time: now });
-    gesture.samples = gesture.samples.filter((sample) => now - sample.time <= 90);
-  }, { passive: false });
-
-  const finish = async (event, cancelled = false) => {
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    const current = gesture;
-    gesture = null;
-    if (!current.horizontal || !current.preparing) return;
-    suppressNextClick = true;
-    setTimeout(() => { suppressNextClick = false; }, 350);
-    if (!await current.preparing) return;
-    const finishTime = performance.now();
-    current.samples.push({ x: event.clientX, time: finishTime });
-    current.samples = current.samples.filter((sample) => finishTime - sample.time <= 90);
-    const first = current.samples[0];
-    const last = current.samples[current.samples.length - 1] || first;
-    const velocity = cancelled || last.time === first.time ? 0 : (last.x - first.x) / (last.time - first.time);
-    const progress = readSettingsProgress();
-    const projected = progress + velocity * 0.2;
-    if (!cancelled && (velocity > 0.45 || projected >= 0.42)) await animateSettingsProgress(1, velocity);
-    else await closeSettingsDrawer({ velocity });
-  };
-  document.addEventListener('pointerup', (event) => { void finish(event); });
-  document.addEventListener('pointercancel', (event) => { void finish(event, true); });
-  document.addEventListener('click', (event) => {
-    if (!suppressNextClick) return;
-    suppressNextClick = false;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }, true);
-}
 
 function localDateKey(date = new Date()) {
   const year = date.getFullYear();
@@ -903,7 +817,6 @@ async function bootstrap() {
   }
   setupPressFeedback();
   await ensureWebApiKey();
-  setupSettingsGesture();
   setupAndroidBackButton();
   await setupNoticeInputs();
 }
