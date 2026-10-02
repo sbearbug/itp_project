@@ -12,7 +12,7 @@ import { BottomSheet, Dialog, dismissTopOverlay, hasOpenOverlay } from './overla
 import { pickDate, pickTime, pickOption } from './pickers.js';
 import { CalendarGrid, calendarDays, parseDateKey } from './CalendarGrid.js';
 import { getTermSettings, loadTermSettings, saveTermSettings, termWeek } from './term.js';
-import { getIntroMode, playIntro } from './intro.js';
+import { getIntroMode, playIntro, INTRO_OPTIONS, getIntroSetting, loadIntroSetting, setIntroSetting } from './intro.js';
 import {
   APPEARANCE_MODES,
   THEMES,
@@ -60,6 +60,7 @@ let editorExitPrompt = null;
 let recognitionRunId = 0;
 let slowTimer = null;
 let statusTextTimer = null;
+let recognitionStageStartedAt = 0;
 let toastTimer = null;
 let listScrollHandler = null;
 let settingsSheet = null;
@@ -100,6 +101,7 @@ const ui = {
   startedAt: 0,
   resultIds: [],
   activeDraftId: null,
+  showingRecognitionCompletion: false,
   actionBusy: null,
   toast: '',
   newItemIds: [],
@@ -332,6 +334,10 @@ async function renderSettingsDrawer({ transition = null } = {}) {
         <span><b>外观</b><small>${MODE_LABELS[appearance.mode]} · ${THEME_LABELS[appearance.theme]}</small></span>
         <i>›</i>
       </button>
+      <button class="settings-menu-item" type="button" data-settings-action="intro">
+        <span class="settings-menu-item__icon">▷</span>
+        <span><b>启动动画</b><small data-intro-label>${INTRO_OPTIONS.find((option) => option.value === getIntroSetting()).label}</small></span><i>›</i>
+      </button>
       <button class="settings-menu-item" type="button" data-settings-view="api">
         <span class="settings-menu-item__icon">⌁</span>
         <span><b>识别接口</b><small>${native ? (custom ? '正在使用自定义接口' : '正在使用内置演示接口') : (webConfigured ? '接口密钥已保存在本机' : '尚未配置接口密钥')}</small></span>
@@ -424,6 +430,16 @@ async function renderSettingsDrawer({ transition = null } = {}) {
   settingsSheet.content.innerHTML = `<div class="settings-view">${content}</div>`;
   bindPickerFields(settingsSheet.content);
   settingsRoot.querySelectorAll('[data-settings-action]').forEach((button) => button.addEventListener('click', async () => {
+    if (button.dataset.settingsAction === 'intro') {
+      const value = await pickOption({ title: '启动动画', value: getIntroSetting(), options: INTRO_OPTIONS, trigger: button });
+      if (!value) return;
+      try {
+        await setIntroSetting(value);
+        button.querySelector('[data-intro-label]').textContent = INTRO_OPTIONS.find((option) => option.value === value).label;
+        showToast('已保存，下次启动生效');
+      } catch { showToast('设置保存失败，请重试'); }
+      return;
+    }
     if (button.dataset.settingsAction !== 'manage') return;
     // 先收起菜单再切换管理模式，避免两次重绘打架
     await closeSettingsDrawer();
@@ -860,16 +876,16 @@ async function refresh() {
 }
 
 async function bootstrap() {
-  await initializeTheme();
+  await Promise.all([initializeTheme(), loadIntroSetting()]);
   const mode = getIntroMode();
   const themeBg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
-  if (isNative()) {
+  if (isNative() && mode !== 'off') {
     void SplashScreen.hide({ fadeOutDuration: 0 });
   }
 
   const [data] = await Promise.all([
     Promise.all([loadEvents(), loadPendingEvents(), loadTermSettings()]),
-    playIntro({ mode, app, themeBg })
+    mode === 'off' ? Promise.resolve() : playIntro({ mode, app, themeBg })
   ]);
   [events, pendingEvents] = data;
   ui.activeDraftId = pendingEvents[0]?.id || null;
@@ -879,8 +895,12 @@ async function bootstrap() {
   } else if (!location.hash) {
     history.replaceState(null, '', '#/list');
   }
-  ui.pageAnimation = 'page--fade-in';
+  ui.pageAnimation = mode === 'off' ? '' : 'page--fade-in';
   await renderRoute();
+  if (mode === 'off') {
+    await playIntro({ mode, app, themeBg });
+    if (isNative()) void SplashScreen.hide({ fadeOutDuration: 0 });
+  }
   setupPressFeedback();
   await ensureWebApiKey();
   setupSettingsGesture();
@@ -1921,6 +1941,8 @@ function clearRecognitionTimers() {
 function setRecognitionStatus(status, patch = {}) {
   if (!RECOGNITION_STATES.includes(status)) throw new Error('未知识别状态：' + status);
   const previous = ui.recognitionStatus;
+  if (status !== previous) recognitionStageStartedAt = Date.now();
+  if (status !== 'done') ui.showingRecognitionCompletion = false;
   clearRecognitionTimers();
   Object.assign(ui, patch, {
     recognitionStatus: status,
@@ -1981,17 +2003,31 @@ function skeletonCard() {
   </div>`;
 }
 
-function recognitionPanel() {
-  const isWorking = WORKING_STATES.includes(ui.recognitionStatus);
-  const statusText = ui.recognitionStatus === 'compressing'
-    ? '正在压缩图片…'
+function recognitionStatusText() {
+  return ui.recognitionStatus === 'compressing'
+    ? (ui.recognitionSource === 'text' ? '正在整理文字…' : '正在压缩图片…')
     : ui.recognitionStatus === 'uploading'
       ? `正在上传${ui.recognitionSource === 'text' ? '文字' : '图片'}…`
-      : STATUS_MESSAGES[ui.statusTextIndex];
+      : ui.recognitionStatus === 'done' ? '识别完成，正在准备确认…' : STATUS_MESSAGES[ui.statusTextIndex];
+}
 
-  return `<section class="recognition-panel">
-    ${ui.batchActive ? '<p class="batch-progress" role="status">正在识别第 ' + ui.batchIndex + ' / ' + ui.batchTotal + ' 张截图</p>' : ''}
-    ${ui.recognitionSource === 'image' ? `<input id="replace-image-input" data-image-input class="visually-hidden" type="file" accept="image/*" multiple ${ui.batchActive ? 'disabled' : ''}>
+function recognitionFeedbackMarkup() {
+  if (WORKING_STATES.includes(ui.recognitionStatus) || ui.showingRecognitionCompletion) return `${skeletonCard()}
+    <div class="recognition-status" role="status">
+      <span data-status-message>${escapeHtml(recognitionStatusText())}</span>
+      <div class="slow-row" ${ui.slow ? '' : 'hidden'}><b>识别时间较长</b><button id="cancel-recognition">取消</button></div>
+    </div>`;
+  if (ui.recognitionStatus === 'error') return `<div class="error-card">
+    <span>!</span><div><h2>没有识别成功</h2><p>${escapeHtml(ui.error)}</p></div>
+    <button id="retry-recognition">重试</button>
+  </div>`;
+  return '';
+}
+
+function recognitionPanel() {
+  return `<section class="recognition-panel ${ui.recognitionStatus === 'done' ? 'recognition-panel--complete' : ''}" data-recognition-run="${recognitionRunId}" data-recognition-source="${ui.recognitionSource}">
+    <p class="batch-progress" role="status" ${ui.batchActive ? '' : 'hidden'}>正在识别第 ${ui.batchIndex} / ${ui.batchTotal} 张截图</p>
+    ${ui.recognitionSource === 'image' ? `<input id="replace-image-input" data-image-input class="visually-hidden" type="file" accept="image/*" multiple ${ui.batchActive || ui.showingRecognitionCompletion ? 'disabled' : ''}>
       <div class="preview-card">
         <img src="${escapeHtml(ui.previewUrl)}" alt="所选通知截图缩略图">
         <div><strong>${escapeHtml(ui.selectedFile?.name || '所选截图')}</strong><small>请确认截图内容正确</small></div>
@@ -2001,16 +2037,54 @@ function recognitionPanel() {
         <div><strong>文字通知</strong><small>${escapeHtml(ui.selectedText.slice(0, 80))}</small></div>
       </div>`}
     ${stageIndicator()}
-    ${isWorking ? `${skeletonCard()}
-      <div class="recognition-status">
-        <span data-status-message>${escapeHtml(statusText)}</span>
-        ${ui.slow ? '<div class="slow-row"><b>识别时间较长</b><button id="cancel-recognition">取消</button></div>' : ''}
-      </div>` : ''}
-    ${ui.recognitionStatus === 'error' ? `<div class="error-card">
-      <span>!</span><div><h2>没有识别成功</h2><p>${escapeHtml(ui.error)}</p></div>
-      <button id="retry-recognition">重试</button>
-    </div>` : ''}
+    <div data-recognition-feedback>${recognitionFeedbackMarkup()}</div>
   </section>`;
+}
+
+function bindRecognitionControls(root = document) {
+  const cancel = root.querySelector('#cancel-recognition');
+  if (cancel) cancel.onclick = cancelRecognition;
+  const retry = root.querySelector('#retry-recognition');
+  if (retry) retry.onclick = () => {
+    if (ui.recognitionSource === 'text') void startTextRecognition(ui.selectedText);
+    else if (ui.batchFailed.length) void startImageBatch(ui.batchFailed.map((item) => item.source), true);
+    else void startImageBatch([{ file: ui.selectedFile }]);
+  };
+}
+
+// 同一识别任务只更新节点状态与文字，保留面板/图片/骨架及其动画实例。
+function updateRecognitionPanel(panel) {
+  const stage = ui.recognitionStatus === 'error' ? ui.errorStage : ui.recognitionStatus;
+  const activeIndex = Math.max(0, STAGE_STATES.indexOf(stage));
+  panel.querySelectorAll('.stage-indicator li').forEach((item, index) => {
+    const complete = ui.recognitionStatus === 'done' || index < activeIndex;
+    item.classList.toggle('is-complete', complete);
+    item.classList.toggle('is-active', ui.recognitionStatus !== 'error' && index === activeIndex);
+    item.querySelector('.stage-dot').textContent = complete ? '✓' : String(index + 1);
+  });
+  panel.classList.toggle('recognition-panel--complete', ui.recognitionStatus === 'done');
+  panel.setAttribute('aria-busy', String(WORKING_STATES.includes(ui.recognitionStatus)));
+  const progress = panel.querySelector('.batch-progress');
+  progress.hidden = !ui.batchActive;
+  progress.textContent = `正在识别第 ${ui.batchIndex} / ${ui.batchTotal} 张截图`;
+  const replace = panel.querySelector('#replace-image-input');
+  if (replace) replace.disabled = ui.batchActive || ui.showingRecognitionCompletion;
+  const feedback = panel.querySelector('[data-recognition-feedback]');
+  if (ui.recognitionStatus === 'error') {
+    if (!feedback.querySelector('.error-card')) {
+      feedback.innerHTML = recognitionFeedbackMarkup();
+      bindRecognitionControls(panel);
+    } else feedback.querySelector('.error-card p').textContent = ui.error;
+    return;
+  }
+  if (!feedback.querySelector('[data-status-message]')) {
+    feedback.innerHTML = recognitionFeedbackMarkup();
+    bindRecognitionControls(panel);
+  }
+  const label = feedback.querySelector('[data-status-message]');
+  if (label) label.textContent = recognitionStatusText();
+  const slow = feedback.querySelector('.slow-row');
+  if (slow) slow.hidden = !ui.slow || !WORKING_STATES.includes(ui.recognitionStatus);
 }
 
 function selectInputPanel() {
@@ -2501,7 +2575,7 @@ function bindEventForm(event, options) {
 
 async function renderAddPage() {
   if (parseRoute().name !== 'add') return;
-  const draft = ui.batchActive ? null : pendingEvents.find((event) => event.id === ui.activeDraftId)
+  const draft = ui.batchActive || WORKING_STATES.includes(ui.recognitionStatus) || ui.showingRecognitionCompletion ? null : pendingEvents.find((event) => event.id === ui.activeDraftId)
     || pendingEvents.find((event) => ui.resultIds.includes(event.id))
     || (ui.recognitionStatus === 'idle' ? pendingEvents[0] : null);
   if (draft) ui.activeDraftId = draft.id;
@@ -2509,6 +2583,13 @@ async function renderAddPage() {
     ? pendingEvents.filter((event) => ui.resultIds.includes(event.id))
     : pendingEvents;
   const draftIndex = Math.max(0, relatedDrafts.findIndex((event) => event.id === draft?.id));
+  const panel = document.querySelector('.add-page .recognition-panel');
+  if (!draft && ui.recognitionStatus !== 'idle' && panel
+    && panel.dataset.recognitionRun === String(recognitionRunId)
+    && panel.dataset.recognitionSource === ui.recognitionSource) {
+    updateRecognitionPanel(panel);
+    return;
+  }
 
   app.innerHTML = `<main class="${pageClass('secondary-page add-page')}">
     <header class="secondary-header">
@@ -2535,12 +2616,7 @@ async function renderAddPage() {
   bindTextInput();
   renderNoticeInputs();
   document.querySelector('#retry-batch')?.addEventListener('click', () => { void startImageBatch(ui.batchFailed.map((item) => item.source), true); });
-  document.querySelector('#cancel-recognition')?.addEventListener('click', cancelRecognition);
-  document.querySelector('#retry-recognition')?.addEventListener('click', () => {
-    if (ui.recognitionSource === 'text') void startTextRecognition(ui.selectedText);
-    else if (ui.batchFailed.length) void startImageBatch(ui.batchFailed.map((item) => item.source), true);
-    else void startImageBatch([{ file: ui.selectedFile }]);
-  });
+  bindRecognitionControls();
   if (draft) bindEventForm(draft, { mode: 'add' });
 }
 
@@ -2640,6 +2716,10 @@ async function startImageBatch(sources, append = false) {
     }
   }
   if (batchId !== batchRunId) return;
+  if (ui.resultIds.length) {
+    await showRecognitionCompletion(ui.resultIds, recognitionRunId);
+    if (batchId !== batchRunId) return;
+  }
   ui.batchActive = false;
   ui.batchSources = [];
   ui.activeDraftId = ui.resultIds[0] || null;
@@ -2704,7 +2784,7 @@ async function startTextRecognition(text) {
   ui.selectedText = content;
   ui.recognitionSource = 'text';
   ui.activeDraftId = null;
-  setRecognitionStatus('uploading', {
+  setRecognitionStatus('compressing', {
     error: '',
     slow: false,
     startedAt: Date.now(),
@@ -2713,6 +2793,9 @@ async function startTextRecognition(text) {
   });
 
   try {
+    await wait(180);
+    if (runId !== recognitionRunId) return;
+    setRecognitionStatus('uploading', { slow: false });
     const extracted = await extractEventsFromText(content, new Date());
     if (runId !== recognitionRunId) return;
     await storeExtractionResults(extracted, runId);
@@ -2725,7 +2808,33 @@ async function startTextRecognition(text) {
   }
 }
 
+async function enterRecognizing(runId) {
+  if (runId !== recognitionRunId || ui.recognitionStatus !== 'uploading') return;
+  await wait(Math.max(0, 250 - (Date.now() - recognitionStageStartedAt)));
+  if (runId !== recognitionRunId || ui.recognitionStatus !== 'uploading') return;
+  setRecognitionStatus('recognizing', { slow: false, statusTextIndex: 0 });
+}
+
+async function showRecognitionCompletion(ids, runId) {
+  if (runId !== recognitionRunId) return;
+  if (ui.recognitionStatus === 'recognizing') {
+    await wait(Math.max(0, 400 - (Date.now() - recognitionStageStartedAt)));
+  }
+  if (runId !== recognitionRunId) return;
+  setRecognitionStatus('done', { resultIds: [...ids], slow: false, showingRecognitionCompletion: true });
+  await wait(550);
+  if (runId !== recognitionRunId) return;
+  document.querySelector('.skeleton-card')?.classList.add('skeleton-card--leaving');
+  await wait(180);
+  if (runId !== recognitionRunId) return;
+  ui.activeDraftId = ids[0] || null;
+  setRecognitionStatus('done', { showingRecognitionCompletion: false });
+}
+
 async function storeExtractionResults(extracted, runId) {
+  if (runId !== recognitionRunId) return;
+  // 结果快返或某平台缺少上传事件时，也不能跳过识别节点。
+  await enterRecognizing(runId);
   if (runId !== recognitionRunId) return;
   const drafts = extracted.map((item) => ({
     ...item,
@@ -2740,14 +2849,7 @@ async function storeExtractionResults(extracted, runId) {
     ui.resultIds.push(...drafts.map((event) => event.id));
     return;
   }
-  document.querySelector('.skeleton-card')?.classList.add('skeleton-card--leaving');
-  await wait(180);
-  if (runId !== recognitionRunId) return;
-  ui.activeDraftId = drafts[0]?.id || null;
-  setRecognitionStatus('done', {
-    resultIds: drafts.map((event) => event.id),
-    slow: false
-  });
+  await showRecognitionCompletion(drafts.map((event) => event.id), runId);
 }
 
 function cancelRecognition(showError = true) {
@@ -2765,7 +2867,7 @@ function cancelRecognition(showError = true) {
 
 window.addEventListener('campus:extract-stage', (event) => {
   if (event.detail === 'recognizing' && ui.recognitionStatus === 'uploading') {
-    setRecognitionStatus('recognizing', { slow: false, statusTextIndex: 0 });
+    void enterRecognizing(recognitionRunId);
   }
 });
 

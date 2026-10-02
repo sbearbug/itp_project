@@ -9,6 +9,7 @@ let stored = [], calls = [], inFlight = 0, maximum = 0, id = 0;
 const context = vm.createContext({
   ui: { recognitionStatus: 'idle', resultIds: [], batchActive: false, previewUrl: '' },
   WORKING_STATES: ['compressing', 'uploading', 'recognizing'], batchRunId: 0, recognitionRunId: 0,
+  recognitionStageStartedAt: 0,
   Date, Event, URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
   window: { dispatchEvent() {} }, document: { querySelector: () => null },
   makeId: () => 'draft-' + ++id,
@@ -28,7 +29,7 @@ const context = vm.createContext({
 });
 vm.runInContext(
   between(main, 'async function startImageBatch(', 'async function startTextRecognition(')
-  + between(main, 'async function storeExtractionResults(', "window.addEventListener('campus:extract-stage'")
+  + between(main, 'async function enterRecognizing(', "window.addEventListener('campus:extract-stage'")
   + between(inputs, 'export function looksLikeNotice(', 'async function digest(').replace('export ', ''), context
 );
 const sources = ['one', 'bad', 'three'].map((name) => ({ file: { name } }));

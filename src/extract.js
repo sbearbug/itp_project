@@ -103,8 +103,15 @@ async function requestExtraction(userContent, now, sourceLabel) {
 
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
+    let recognizingSent = false;
+    let settled = false;
+    const recognizing = () => {
+      if (settled || recognizingSent) return;
+      recognizingSent = true;
+      window.dispatchEvent(new CustomEvent('campus:extract-stage', { detail: 'recognizing' }));
+    };
     const cancel = () => request.abort();
-    const cleanup = () => window.removeEventListener('campus:cancel-extraction', cancel);
+    const cleanup = () => { settled = true; window.removeEventListener('campus:cancel-extraction', cancel); };
 
     request.open('POST', native ? apiUrl : '/api/chat');
     request.timeout = 60_000;
@@ -112,9 +119,10 @@ async function requestExtraction(userContent, now, sourceLabel) {
     if (native) request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
     else request.setRequestHeader('X-Campus-Api-Url', apiUrl);
 
-    request.upload.addEventListener('load', () => {
-      window.dispatchEvent(new CustomEvent('campus:extract-stage', { detail: 'recognizing' }));
-    }, { once: true });
+    request.upload.addEventListener('load', recognizing, { once: true });
+    request.addEventListener('readystatechange', () => {
+      if (request.readyState >= 2) recognizing();
+    });
 
     request.addEventListener('load', () => {
       cleanup();
@@ -160,6 +168,9 @@ async function requestExtraction(userContent, now, sourceLabel) {
 
     window.addEventListener('campus:cancel-extraction', cancel, { once: true });
     request.send(requestBody);
+    // Capacitor 原生 XHR 桥接不保证派发 upload.load；交给桥接后按阶段推进，
+    // 不显示虚构的上传百分比。Web 仍使用实际上传结束事件。
+    if (native) recognizing();
   });
 }
 

@@ -3,7 +3,8 @@
  *
  * 用法：
  *   import { getIntroMode, playIntro } from './intro.js';
- *   const mode = getIntroMode();              // 'full' | 'quick'
+ *   await loadIntroSetting();
+ *   const mode = getIntroMode();              // 'full' | 'off'
  *   await Promise.all([playIntro({ mode, app: document.querySelector('#app') }), loadEvents()]);
  *
  * 约定：
@@ -12,7 +13,29 @@
  *   - 若当前主题背景色与系统启动页不同，传入 themeBg，开头 150ms 内过渡过去。
  */
 
+import { Preferences } from '@capacitor/preferences';
+
 const STORAGE_KEY = 'intro:lastFullDate';
+const SETTING_KEY = 'intro:frequency';
+export const INTRO_OPTIONS = [
+  { value: 'off', label: '关闭' },
+  { value: 'daily', label: '每天一次' },
+  { value: 'always', label: '保持开启' }
+];
+let introSetting = 'daily';
+export const getIntroSetting = () => introSetting;
+export async function loadIntroSetting() {
+  try {
+    const { value } = await Preferences.get({ key: SETTING_KEY });
+    introSetting = INTRO_OPTIONS.some((option) => option.value === value) ? value : 'daily';
+  } catch { introSetting = 'daily'; }
+  return introSetting;
+}
+export async function setIntroSetting(value) {
+  if (!INTRO_OPTIONS.some((option) => option.value === value)) throw new Error('无效的启动动画设置');
+  await Preferences.set({ key: SETTING_KEY, value });
+  introSetting = value;
+}
 
 // 近似无回弹的弹簧缓动；旧版 WebView 不支持 linear() 时回退到 cubic-bezier
 const SPRING = 'linear(0, 0.07 4%, 0.25 10%, 0.5 19%, 0.72 30%, 0.86 42%, 0.94 55%, 0.98 70%, 1)';
@@ -25,11 +48,12 @@ function todayString() {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-/** 每天首次打开返回 'full'，之后返回 'quick'。 */
+/** 关闭不播放；每日最多一次；保持开启每次冷启动播放。 */
 export function getIntroMode() {
+  if (introSetting === 'off') return 'off';
   try {
     const today = todayString();
-    if (localStorage.getItem(STORAGE_KEY) === today) return 'quick';
+    if (introSetting === 'daily' && localStorage.getItem(STORAGE_KEY) === today) return 'off';
     localStorage.setItem(STORAGE_KEY, today);
   } catch (_) { /* 存储不可用时按完整动画处理 */ }
   return 'full';
@@ -41,12 +65,17 @@ function prefersReducedMotion() {
 
 /**
  * 播放启动动画，结束后移除遮罩并显示主界面。
- * @param {{ mode?: 'full'|'quick', app: HTMLElement, themeBg?: string }} opts
+ * @param {{ mode?: 'full'|'quick'|'off', app: HTMLElement, themeBg?: string }} opts
  * @returns {Promise<void>}
  */
 export function playIntro({ mode = 'full', app, themeBg } = {}) {
   const overlay = document.getElementById('intro');
   if (!overlay) { reveal(app); return Promise.resolve(); }
+  if (mode === 'off') {
+    overlay.classList.add('is-done');
+    reveal(app);
+    return Promise.resolve();
+  }
 
   const base = overlay.querySelector('.intro-base');
   const page = overlay.querySelector('.intro-page');

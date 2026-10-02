@@ -257,6 +257,7 @@ body.settings-open .settings-drawer { transform: translateX(0); }
 .skeleton-field i { width: 8px; height: 8px; border-radius: 50%; background: var(--surface-2); }
 .recognition-status { min-height: 76px; padding: 17px 6px; color: var(--text-2); text-align: center; font-size: 13px; }
 .slow-row { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 11px; color: var(--text-2); }
+.slow-row[hidden], .batch-progress[hidden] { display: none; }
 .slow-row button { padding: 4px 9px; border: 1px solid var(--surface-2); border-radius: 8px; color: var(--text); background: var(--surface-2); cursor: pointer; }
 .error-card { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 13px; padding: 20px; border: 1px solid var(--urgent-bg); border-radius: 22px; background: var(--urgent-bg); animation: fade-in 200ms ease-out both; }
 .error-card > span { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; color: var(--surface); background: var(--urgent-text); font-size: 22px; font-weight: 800; }
@@ -279,7 +280,8 @@ body.settings-open .settings-drawer { transform: translateX(0); }
 .toast span { color: var(--surface-2); }
 .toast--leaving { animation: fade-out 180ms ease-out both; }
 
-@keyframes shimmer { to { transform: translateX(100%); } }
+/* 高光宽度为容器的 34%；位移以高光自身为基准，300% 才能扫完整张卡片。 */
+@keyframes shimmer { to { transform: translateX(300%); } }
 @keyframes result-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes item-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes uncertain-pulse { 0% { background-color: var(--surface-2); } 100% { background-color: var(--surface-2); } }
@@ -822,6 +824,8 @@ body.settings-open #app { transform: none; }
 .is-active .stage-dot { border-color: var(--btn); background: var(--surface-2); }
 .is-complete .stage-dot { border-color: var(--btn); color: var(--on-accent); background: var(--accent); }
 .skeleton-card::after { inset: 0 auto 0 0; width: 34%; background: var(--on-btn); }
+.recognition-panel--complete .skeleton-card::after { animation: none; opacity: 0; }
+.add-page .activity-editor--recognized { animation: fade-in 250ms var(--motion-direct) both; }
 .result-card h3 { font-family: inherit; }
 
 .app-dialog-backdrop { align-items: center; background: color-mix(in srgb, var(--text) 34%, transparent); backdrop-filter: none; transition-timing-function: var(--motion-direct); }
