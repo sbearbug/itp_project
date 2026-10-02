@@ -4,6 +4,8 @@ import emptyCalendarUrl from '../material/empty-calendar.svg?url';
 import { App as CapacitorApp } from '@capacitor/app';
 import { SplashScreen } from '@capacitor/splash-screen';
 import { isNative } from './platform.js';
+import { CalendarGrid, calendarDays, parseDateKey } from './CalendarGrid.js';
+import { getTermSettings, loadTermSettings, saveTermSettings, termWeek } from './term.js';
 import { getIntroMode, playIntro } from './intro.js';
 import {
   APPEARANCE_MODES,
@@ -90,7 +92,10 @@ const ui = {
   openSwipeId: null,
   endedExpanded: false,
   settingsOpen: false,
-  settingsView: 'menu'
+  settingsView: 'menu',
+  monthExpanded: false,
+  calendarMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+  selectedDate: null
 };
 
 const escapeHtml = (value = '') => String(value)
@@ -392,6 +397,10 @@ async function renderSettingsDrawer({ transition = null } = {}) {
         <span><b>识别接口</b><small>${native ? (custom ? '正在使用自定义接口' : '正在使用内置演示接口') : (webConfigured ? '接口密钥已保存在本机' : '尚未配置接口密钥')}</small></span>
         <i>›</i>
       </button>
+      <button class="settings-menu-item" type="button" data-settings-view="term">
+        <span class="settings-menu-item__icon">▦</span>
+        <span><b>学期设置</b><small>${escapeHtml(getTermSettings().name)} · ${escapeHtml(getTermSettings().start)}</small></span><i>›</i>
+      </button>
     </div>`;
 
   const appearanceMarkup = `${backHeader('外观', '主题会立即应用并保存在当前设备')}
@@ -440,7 +449,15 @@ async function renderSettingsDrawer({ transition = null } = {}) {
       <button class="button button--primary" id="web-api-key-button" type="button">${webConfigured ? '更新接口密钥' : '填写接口密钥'}</button>
     </div>`}`;
 
-  const content = ui.settingsView === 'appearance'
+  const term = getTermSettings();
+  const termMarkup = `${backHeader('学期设置', '修改后重新计算教学周')}
+    <form class="settings-form" id="term-settings-form">
+      <label class="settings-field"><span>学期名称</span><input name="name" value="${escapeHtml(term.name)}" maxlength="24" required></label>
+      <label class="settings-field"><span>开学日期</span><input name="start" type="date" value="${term.start}" required></label>
+      <p class="settings-note">教学周期为 ${TERM_CONFIG.totalWeeks} 周，学期外不显示教学周。</p>
+      <button class="button button--primary" type="submit">保存学期</button>
+    </form>`;
+  const content = ui.settingsView === 'term' ? termMarkup : ui.settingsView === 'appearance'
     ? appearanceMarkup
     : ui.settingsView === 'api'
       ? apiMarkup
@@ -510,6 +527,22 @@ async function renderSettingsDrawer({ transition = null } = {}) {
     ui.actionBusy = null;
     await renderSettingsDrawer();
     showToast('已使用自定义接口');
+  });
+  settingsRoot.querySelector('#term-settings-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    const data = new FormData(form);
+    button.disabled = true;
+    try {
+      await saveTermSettings({ name: String(data.get('name')), start: String(data.get('start')) });
+      await closeSettingsDrawer();
+      if (parseRoute().name === 'list') await renderListPage();
+      showToast('学期设置已保存');
+    } catch (error) {
+      button.disabled = false;
+      await showNotice(error.message || '保存失败，请重试');
+    }
   });
   settingsRoot.querySelector('#default-api-button')?.addEventListener('click', async () => {
     await clearCustomApiConfig();
@@ -921,7 +954,7 @@ function setupSettingsGesture() {
   const canStart = (target) => {
     if (ui.settingsOpen || closeActiveDialog) return false;
     if (!(target instanceof Element)) return true;
-    return !target.closest('.app-dialog, .settings-drawer, .event-card-row--open');
+    return !target.closest('.app-dialog, .settings-drawer, .event-card-row--open, .month-calendar');
   };
 
   document.addEventListener('pointerdown', (event) => {
@@ -1035,7 +1068,7 @@ async function bootstrap() {
   }
 
   const [data] = await Promise.all([
-    Promise.all([loadEvents(), loadPendingEvents()]),
+    Promise.all([loadEvents(), loadPendingEvents(), loadTermSettings()]),
     playIntro({ mode, app, themeBg })
   ]);
   [events, pendingEvents] = data;
@@ -1158,6 +1191,15 @@ async function handleBack() {
   }
   if (route.name === 'edit') {
     await navigateBackToList();
+    return;
+  }
+  if (ui.selectedDate) {
+    ui.selectedDate = null;
+    await renderListPage();
+    return;
+  }
+  if (ui.monthExpanded) {
+    setMonthExpanded(false);
     return;
   }
   if (ui.selectionMode) {
@@ -1315,20 +1357,14 @@ function startOfLocalDay(date) {
 }
 
 function termWeekNumber(date = new Date()) {
-  const month = date.getMonth() + 1;
-  const startYear = month < 6 ? date.getFullYear() - 1 : date.getFullYear();
-  const termStart = new Date(startYear, TERM_CONFIG.startMonth - 1, TERM_CONFIG.startDay);
-  const termEnd = new Date(termStart);
-  termEnd.setDate(termEnd.getDate() + TERM_CONFIG.totalWeeks * 7);
-  const today = startOfLocalDay(date);
-  if (today < termStart || today >= termEnd) return null;
-  return Math.floor((today.getTime() - termStart.getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1;
+  return termWeek(date);
 }
 
 function todayCalendarMarkup(now = new Date()) {
   const week = termWeekNumber(now);
   const weekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(now);
-  return `<section class="today-calendar" aria-label="今天">
+  return `<section class="today-calendar ${ui.monthExpanded ? 'today-calendar--expanded' : ''}" aria-label="今天">
+    <div class="today-calendar__summary" id="today-calendar-toggle" role="button" tabindex="0" aria-expanded="${ui.monthExpanded}" aria-label="${ui.monthExpanded ? '收起月历' : '展开月历'}">
     <span class="today-calendar__binding" aria-hidden="true"><i></i><i></i></span>
     <div class="today-calendar__date">
       <span>今天</span>
@@ -1336,9 +1372,128 @@ function todayCalendarMarkup(now = new Date()) {
     </div>
     <div class="today-calendar__detail">
       <b>${now.getMonth() + 1}月 · ${weekday}</b>
-      ${week ? `<small>${TERM_CONFIG.label}第${week}周</small>` : ''}
+      ${week ? `<button type="button" class="term-week-button" id="term-week-button">${escapeHtml(getTermSettings().name)}第${week}周</button>` : ''}
     </div>
+    </div>
+    <div class="month-calendar-wrap ${ui.monthExpanded ? 'is-open' : ''}" id="month-calendar-wrap" aria-hidden="${!ui.monthExpanded}" ${ui.monthExpanded ? '' : 'inert'}><div class="month-calendar-inner"><div class="month-calendar" id="month-calendar">${monthCalendarMarkup(now)}</div></div></div>
   </section>`;
+}
+
+function eventsOnDate(key) {
+  return events.filter((event) => {
+    const range = eventDayRange(event);
+    return range && localDateKey(range.start) <= key && localDateKey(range.end) >= key;
+  }).sort(sortByStart);
+}
+
+function createCalendarGrid(now = new Date()) {
+  const marks = {};
+  for (const date of calendarDays(ui.calendarMonth)) {
+    const key = localDateKey(date);
+    const overlapping = eventsOnDate(key);
+    if (overlapping.length) marks[key] = overlapping.some((event) => isUrgentDeadline(event, now)) ? 'urgent' : 'activity';
+    if (events.some((event) => isUrgentDeadline(event, now)
+      && localDateKey(new Date(event.deadline)) === key)) marks[key] = 'urgent';
+  }
+  return new CalendarGrid({ month: ui.calendarMonth, today: now, selected: ui.selectedDate, marks,
+    onSelect: (key) => { ui.selectedDate = key; void renderListPage(); } });
+}
+
+function monthCalendarMarkup(now = new Date()) {
+  const month = ui.calendarMonth;
+  const current = month.getFullYear() === now.getFullYear() && month.getMonth() === now.getMonth();
+  return `<div class="month-calendar__toolbar">
+    <button class="icon-button" type="button" data-month-shift="-1" aria-label="上个月">‹</button>
+    <button class="month-calendar__title" type="button" id="month-collapse">${month.getFullYear()}年${month.getMonth() + 1}月</button>
+    ${current ? '' : '<button class="month-calendar__today" type="button" id="month-today">今天</button>'}
+    <button class="icon-button" type="button" data-month-shift="1" aria-label="下个月">›</button>
+  </div>${createCalendarGrid(now).markup()}`;
+}
+
+function setMonthExpanded(expanded) {
+  ui.monthExpanded = expanded;
+  document.querySelector('.today-calendar')?.classList.toggle('today-calendar--expanded', expanded);
+  document.querySelector('#month-calendar-wrap')?.classList.toggle('is-open', expanded);
+  const wrap = document.querySelector('#month-calendar-wrap');
+  wrap?.setAttribute('aria-hidden', String(!expanded));
+  wrap?.toggleAttribute('inert', !expanded);
+  const toggle = document.querySelector('#today-calendar-toggle');
+  toggle?.setAttribute('aria-expanded', String(expanded));
+  toggle?.setAttribute('aria-label', expanded ? '收起月历' : '展开月历');
+}
+
+function changeCalendarMonth(delta, today = false) {
+  const now = new Date();
+  ui.calendarMonth = today ? new Date(now.getFullYear(), now.getMonth(), 1)
+    : new Date(ui.calendarMonth.getFullYear(), ui.calendarMonth.getMonth() + delta, 1);
+  const root = document.querySelector('#month-calendar');
+  if (!root) return;
+  root.innerHTML = monthCalendarMarkup(now);
+  bindMonthCalendar();
+}
+
+function bindMonthCalendar() {
+  const root = document.querySelector('#month-calendar');
+  if (!root) return;
+  createCalendarGrid().bind(root);
+  root.querySelectorAll('[data-month-shift]').forEach((button) => button.addEventListener('click', () => changeCalendarMonth(Number(button.dataset.monthShift))));
+  root.querySelector('#month-today')?.addEventListener('click', () => changeCalendarMonth(0, true));
+  root.querySelector('#month-collapse')?.addEventListener('click', () => setMonthExpanded(false));
+  let gesture = null;
+  // 属性监听器会覆盖旧视图的手势；月份重绘不会叠加监听器。
+  root.onpointerdown = (event) => {
+    if (!event.isPrimary || event.button > 0 || event.clientX <= 24 || event.clientX >= innerWidth - 24) return;
+    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY,
+      inGrid: Boolean(event.target.closest('.calendar-grid')), moved: false };
+  };
+  root.onpointermove = (event) => {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    if (Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 9) {
+      gesture.moved = true;
+      capturePointer(root, event.pointerId);
+      if (event.cancelable) event.preventDefault();
+    }
+  };
+  root.onpointerup = (event) => {
+    if (!gesture || gesture.id !== event.pointerId) return;
+    const current = gesture;
+    gesture = null;
+    releasePointer(root, event.pointerId);
+    const dx = event.clientX - current.x;
+    const dy = event.clientY - current.y;
+    if (current.moved) root.dataset.ignoreClickUntil = String(performance.now() + 350);
+    if (current.inGrid && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      changeCalendarMonth(dx < 0 ? 1 : -1);
+    } else if (dy < -45 && Math.abs(dy) > Math.abs(dx) * 1.2) {
+      setMonthExpanded(false);
+    }
+  };
+  root.onpointercancel = () => { gesture = null; };
+  if (!root.dataset.gestureInstalled) {
+    root.dataset.gestureInstalled = 'true';
+    root.addEventListener('click', (event) => {
+      if (performance.now() < Number(root.dataset.ignoreClickUntil || 0)) {
+        event.preventDefault(); event.stopImmediatePropagation();
+      }
+    }, true);
+  }
+}
+
+function bindTodayCalendar() {
+  const toggle = document.querySelector('#today-calendar-toggle');
+  toggle?.addEventListener('click', () => setMonthExpanded(!ui.monthExpanded));
+  toggle?.addEventListener('keydown', (event) => {
+    if (event.target !== toggle || !['Enter', ' '].includes(event.key)) return;
+    event.preventDefault(); setMonthExpanded(!ui.monthExpanded);
+  });
+  document.querySelector('#term-week-button')?.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    if (!await prepareSettingsDrawer(0)) return;
+    ui.settingsView = 'term';
+    await renderSettingsDrawer();
+    await animateSettingsProgress(1);
+  });
+  bindMonthCalendar();
 }
 
 function groupUpcomingEvents(items, now = new Date()) {
@@ -1705,6 +1860,7 @@ async function renderListPage() {
   const now = new Date();
   const upcoming = events.filter((event) => !isEnded(event, now)).sort(sortByStart);
   const ended = events.filter((event) => isEnded(event, now)).sort((a, b) => sortByStart(b, a));
+  const filtered = ui.selectedDate ? eventsOnDate(ui.selectedDate) : null;
   ui.fabHidden = false;
   ui.openSwipeId = null;
   ui.selectedEventIds = new Set([...ui.selectedEventIds].filter((id) => events.some((event) => event.id === id)));
@@ -1727,7 +1883,8 @@ async function renderListPage() {
     </button>` : ''}
 
     <section class="activity-list">
-      ${upcoming.length
+      ${filtered ? `<button class="date-filter" id="clear-date-filter" type="button">${formatDayLabel(parseDateKey(ui.selectedDate), now)} · 清除</button>
+        ${filtered.length ? `<div class="event-list">${filtered.map((event) => listCard(event)).join('')}</div>` : '<div class="empty-state"><p>这天没有活动</p></div>'}` : upcoming.length
         ? activityGroupsMarkup(upcoming, now)
         : `<div class="empty-state empty-state--list">
             <img src="${emptyCalendarUrl}" alt="空白台历页">
@@ -1735,9 +1892,9 @@ async function renderListPage() {
           </div>`}
     </section>
 
-    ${ended.length ? `<section class="ended-group">
+    ${!filtered && ended.length ? `<section class="ended-group">
       <button class="ended-summary" id="ended-toggle" type="button" aria-expanded="${ui.endedExpanded}">
-        <span>已结束</span><span class="ended-summary__right"><b>${ended.length}</b><i>⌄</i></span>
+        <span>已结束</span><span class="ended-summary__right"><b>${ended.length}</b><i aria-hidden="true">${ui.endedExpanded ? '−' : '+'}</i></span>
       </button>
       <div class="ended-list-wrap ${ui.endedExpanded ? 'is-open' : ''}" id="ended-list-wrap">
         <div class="ended-list-inner"><div class="event-list">${ended.map((event, index) => listCard(event, true, index)).join('')}</div></div>
@@ -1754,11 +1911,14 @@ async function renderListPage() {
 
   document.querySelector('#add-button')?.addEventListener('click', () => navigateTo('#/add'));
   document.querySelector('#settings-button')?.addEventListener('click', openSettingsDrawer);
+  bindTodayCalendar();
+  document.querySelector('#clear-date-filter')?.addEventListener('click', () => { ui.selectedDate = null; void renderListPage(); });
   document.querySelector('#ended-toggle')?.addEventListener('click', () => {
     ui.endedExpanded = !ui.endedExpanded;
     const button = document.querySelector('#ended-toggle');
     const wrap = document.querySelector('#ended-list-wrap');
     button?.setAttribute('aria-expanded', String(ui.endedExpanded));
+    if (button?.querySelector('i')) button.querySelector('i').textContent = ui.endedExpanded ? '−' : '+';
     wrap?.classList.toggle('is-open', ui.endedExpanded);
   });
   document.querySelector('#cancel-selection')?.addEventListener('click', exitSelectionMode);
