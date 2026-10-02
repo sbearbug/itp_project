@@ -81,12 +81,33 @@ function cacheAppearance() {
   localStorage.setItem(THEME_CACHE_KEY, appearance.theme);
 }
 
+function toHexColor(value, fallback = '') {
+  const match = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(value || '');
+  if (match) {
+    const channel = (n) => Math.round(Number(n)).toString(16).padStart(2, '0');
+    return `#${channel(match[1])}${channel(match[2])}${channel(match[3])}`;
+  }
+  return /^#[0-9a-f]{6}$/i.test(value || '') ? value : fallback;
+}
+
+// 状态栏背景跟随当前页面背景。页面底色是 body 的背景（--surface），不是 :root 的 --bg，
+// 所以这里读实际计算值，避免两者不一致时状态栏和页面顶部出现色差。
+function readPageBackground() {
+  if (typeof document === 'undefined') return '#FFFFFF';
+  const fromBody = toHexColor(document.body ? getComputedStyle(document.body).backgroundColor : '');
+  if (fromBody) return fromBody;
+  const token = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim();
+  return toHexColor(token, '#FFFFFF');
+}
+
 async function syncNativeSystemBars(theme, background) {
   if (!isNative()) return;
   const dark = theme.endsWith('-dark');
   await Promise.allSettled([
     StatusBar.setBackgroundColor({ color: background }),
-    StatusBar.setStyle({ style: dark ? Style.Light : Style.Dark }),
+    // Capacitor 的 Style 命名与直觉相反：Style.Dark = 深色背景配浅色图标，
+    // Style.Light = 浅色背景配深色图标。深色主题要浅色图标，因此是 Style.Dark。
+    StatusBar.setStyle({ style: dark ? Style.Dark : Style.Light }),
     SystemBars.setNavigationBar({
       color: background,
       darkIcons: !dark,
@@ -108,7 +129,8 @@ export async function applyTheme({ animate = false } = {}) {
   }
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme.endsWith('-dark') ? 'dark' : 'light';
-  const background = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  // 主题令牌在这里才生效，必须等 dataset.theme 写入之后再读背景色。
+  const background = readPageBackground();
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background);
   await syncNativeSystemBars(theme, background);
   return theme;

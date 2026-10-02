@@ -60,6 +60,7 @@ let settingsCloseGestureInstalled = false;
 let pressFeedbackInstalled = false;
 let settingsAnimation = null;
 let settingsScrimAnimation = null;
+let activeSettingsViewAnimation = null;
 let activePageAnimation = null;
 let navigationSequence = 0;
 
@@ -296,7 +297,66 @@ async function ensureWebApiKey() {
   if (configured === false) await openWebApiKeyDialog({ required: true });
 }
 
-async function renderSettingsDrawer() {
+function prefersReducedMotion() {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// 滑块位移：3 列 + 4px 间隙，列间距换算成滑块自身宽度就是 100% + 4px
+function modeThumbTransform(index) {
+  return `translateX(calc(${index} * (100% + 4px)))`;
+}
+
+// 设置弹层内部的视图切换（菜单 ↔ 外观 / 识别接口）。
+// 时长与方向和页面路由保持一致：进入从右侧滑入，返回先向右滑出再淡入，
+// 让“进入和退出沿同一路径”的规则在弹层里同样成立。
+async function animateSettingsView(element, target, duration, easingName) {
+  if (!element) return;
+  const computed = getComputedStyle(element);
+  const from = {
+    transform: computed.transform === 'none' ? 'translateX(0)' : computed.transform,
+    opacity: computed.opacity
+  };
+  const animation = element.animate([from, target], {
+    duration,
+    easing: motionEasing(easingName),
+    fill: 'forwards'
+  });
+  activeSettingsViewAnimation = { animation, element };
+  try {
+    await animation.finished;
+  } catch {
+    return;
+  }
+  if (activeSettingsViewAnimation?.animation !== animation) return;
+  activeSettingsViewAnimation = null;
+  animation.cancel();
+  element.style.transform = target.transform || '';
+  element.style.opacity = target.opacity ?? '';
+}
+
+// 模式选择是“同一控件内的状态变化”，不能整块重绘：重绘会让滑块瞬移。
+// 另外 transform 必须直接写在滑块的行内样式上：只改它引用的自定义属性
+// 不会触发 CSS 过渡（浏览器不把 var 代入结果的变化当作可过渡变化），滑块会瞬移。
+function applyModeSelection(mode) {
+  const group = settingsRoot?.querySelector('.appearance-mode');
+  if (!group) return;
+  const thumb = group.querySelector('.appearance-mode__thumb');
+  if (thumb) thumb.style.transform = modeThumbTransform(Math.max(0, APPEARANCE_MODES.indexOf(mode)));
+  group.querySelectorAll('[data-appearance-mode]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.appearanceMode === mode));
+  });
+}
+
+function applyThemeSelection(theme) {
+  settingsRoot?.querySelectorAll('[data-selected-theme]').forEach((button) => {
+    const selected = button.dataset.selectedTheme === theme;
+    button.setAttribute('aria-pressed', String(selected));
+    const mark = button.querySelector('b');
+    if (mark) mark.textContent = selected ? '✓' : '';
+  });
+}
+
+async function renderSettingsDrawer({ transition = null } = {}) {
   const native = isNative();
   const custom = native ? await getCustomApiConfig() : null;
   const webConfigured = native ? null : await getWebApiStatus();
@@ -314,9 +374,14 @@ async function renderSettingsDrawer() {
 
   const menuMarkup = `<header class="settings-header">
       <h2>设置</h2>
-      <p>调整外观或识别接口</p>
+      <p>调整外观、识别接口或批量管理活动</p>
     </header>
     <div class="settings-menu">
+      ${events.length ? `<button class="settings-menu-item" type="button" data-settings-action="manage">
+        <span class="settings-menu-item__icon">☑</span>
+        <span><b>${ui.selectionMode ? '完成管理' : '管理活动'}</b><small>${ui.selectionMode ? '退出批量选择' : '批量加入日历或删除'}</small></span>
+        <i>›</i>
+      </button>` : ''}
       <button class="settings-menu-item" type="button" data-settings-view="appearance">
         <span class="settings-menu-item__icon">◐</span>
         <span><b>外观</b><small>${MODE_LABELS[appearance.mode]} · ${THEME_LABELS[appearance.theme]}</small></span>
@@ -333,6 +398,7 @@ async function renderSettingsDrawer() {
     <section class="appearance-section">
       <h3>模式</h3>
       <div class="appearance-mode" role="group" aria-label="模式">
+        <span class="appearance-mode__thumb" aria-hidden="true" style="transform:${modeThumbTransform(Math.max(0, APPEARANCE_MODES.indexOf(appearance.mode)))}"></span>
         ${APPEARANCE_MODES.map((mode) => `<button type="button" data-appearance-mode="${mode}" aria-pressed="${appearance.mode === mode}">${MODE_LABELS[mode]}</button>`).join('')}
       </div>
     </section>
@@ -379,24 +445,46 @@ async function renderSettingsDrawer() {
     : ui.settingsView === 'api'
       ? apiMarkup
       : menuMarkup;
+
+  // 返回时先让当前视图向右滑出，再重建内容；这与页面返回的顺序一致。
+  const outgoing = transition === 'back' && !prefersReducedMotion()
+    ? settingsRoot?.querySelector('.settings-view')
+    : null;
+  activeSettingsViewAnimation?.animation.cancel();
+  activeSettingsViewAnimation = null;
+  if (outgoing) {
+    await animateSettingsView(outgoing, { transform: 'translateX(34px)', opacity: 0 }, 340);
+  }
+
   settingsRoot.innerHTML = `<div class="settings-scrim" data-settings-close></div>
     <aside class="settings-drawer" aria-label="设置" aria-hidden="${!ui.settingsOpen}">
       <div class="settings-drawer__handle"></div>
-      ${content}
+      <div class="settings-view">${content}</div>
     </aside>`;
 
   settingsRoot.querySelector('[data-settings-close]').addEventListener('click', closeSettingsDrawer);
+  settingsRoot.querySelectorAll('[data-settings-action]').forEach((button) => button.addEventListener('click', async () => {
+    if (button.dataset.settingsAction !== 'manage') return;
+    // 先收起菜单再切换管理模式，避免两次重绘打架
+    await closeSettingsDrawer();
+    await toggleSelectionMode();
+  }));
   settingsRoot.querySelectorAll('[data-settings-view]').forEach((button) => button.addEventListener('click', async () => {
-    ui.settingsView = button.dataset.settingsView;
-    await renderSettingsDrawer();
+    const nextView = button.dataset.settingsView;
+    if (nextView === ui.settingsView) return;
+    ui.settingsView = nextView;
+    await renderSettingsDrawer({ transition: nextView === 'menu' ? 'back' : 'forward' });
   }));
   settingsRoot.querySelectorAll('[data-appearance-mode]').forEach((button) => button.addEventListener('click', async () => {
-    await setAppearanceMode(button.dataset.appearanceMode);
-    await renderSettingsDrawer();
+    const mode = button.dataset.appearanceMode;
+    await setAppearanceMode(mode);
+    // 就地更新，不重绘，滑块才能从旧位置滑过去
+    applyModeSelection(mode);
   }));
   settingsRoot.querySelectorAll('[data-selected-theme]').forEach((button) => button.addEventListener('click', async () => {
-    await setSelectedTheme(button.dataset.selectedTheme);
-    await renderSettingsDrawer();
+    const theme = button.dataset.selectedTheme;
+    await setSelectedTheme(theme);
+    applyThemeSelection(theme);
   }));
   settingsRoot.querySelector('#api-settings-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -437,6 +525,17 @@ async function renderSettingsDrawer() {
   });
 
   setupSettingsCloseGesture();
+
+  // 监听器绑定完再播入场动画，动画期间仍然可以点击
+  const view = settingsRoot.querySelector('.settings-view');
+  if (transition === 'forward' && view && !prefersReducedMotion()) {
+    view.style.transform = 'translateX(34px)';
+    view.style.opacity = '0.72';
+    await animateSettingsView(view, { transform: 'translateX(0)', opacity: 1 }, 380);
+  } else if (transition === 'back' && view && !prefersReducedMotion()) {
+    view.style.opacity = '0';
+    await animateSettingsView(view, { transform: 'translateX(0)', opacity: 1 }, 300, '--motion-direct');
+  }
 }
 
 function setupSettingsCloseGesture() {
@@ -516,47 +615,198 @@ function setupSettingsCloseGesture() {
   gestureSurface.addEventListener('pointercancel', (event) => finish(event, true));
 }
 
+// 按下反馈的唯一入口：指针与键盘共用一套状态。
+// - 卡片类（活动卡片 / 今日台历 / 主题色块）加 .is-pressed 后由 CSS 做缩放回弹；
+// - 其余可点元素加同一个类后由 CSS 铺状态底色。
+const PRESS_CARD_SELECTOR = '.event-card, .today-calendar, .theme-option';
+const PRESS_BACKGROUND_SELECTOR = 'button:not(:disabled), [role="button"]';
+// 列表里的卡片在按下约 60ms 后才进入按下态；这段时间内一旦开始滚动就整轮放弃，
+// 避免滑动列表时卡片闪一下。
+const PRESS_DELAYED_SELECTOR = '.event-card';
+const PRESS_DELAY = 60;
+const PRESS_SCROLL_TOLERANCE = 8;
+// 必须与 style.css 里 .is-pressed 的 scale 过渡时长一致（90ms ease-out）。
+// 卡片在指针抬起时会先补足这段时长再回弹，所以无论点按多快，下压深度都一致。
+const PRESS_DEPTH_DURATION = 90;
+// 再多留约一帧：如果取消按下态的时刻正好等于过渡结束时刻，“触底”那一帧可能
+// 落在两次渲染之间而永远看不到，深度就会随帧率轻微漂移。
+const PRESS_DEPTH_HOLD = PRESS_DEPTH_DURATION + 16;
+
+function pressTargetFor(node) {
+  if (!(node instanceof Element)) return null;
+  return node.closest(PRESS_CARD_SELECTOR) || node.closest(PRESS_BACKGROUND_SELECTOR);
+}
+
 function setupPressFeedback() {
   if (pressFeedbackInstalled) return;
   pressFeedbackInstalled = true;
-  let pressed = null;
-  let rippleTimer = null;
+  let active = null;
+  // 卡片为了凑满下压深度而推迟的“松开”动作
+  let pendingRelease = null;
 
-  const release = () => {
-    const target = pressed;
-    pressed = null;
-    if (!target) return;
-    target.classList.remove('is-pressed');
-    window.clearTimeout(rippleTimer);
-    rippleTimer = window.setTimeout(() => target.classList.remove('ripple-active'), 420);
+  const cancelDelay = (state) => {
+    if (state.delayTimer === null) return;
+    window.clearTimeout(state.delayTimer);
+    state.delayTimer = null;
+  };
+
+  // 立即撤销按压视觉：取消、失焦，以及已经压满深度的正常释放
+  const dropPress = (state) => {
+    if (!state) return;
+    cancelDelay(state);
+    state.element.classList.remove('is-pressed');
+  };
+
+  const flushPendingRelease = () => {
+    if (!pendingRelease) return;
+    window.clearTimeout(pendingRelease.timer);
+    pendingRelease.element.classList.remove('is-pressed');
+    pendingRelease = null;
+  };
+
+  const showPress = (state) => {
+    if (active !== state || state.pressed) return;
+    state.pressed = true;
+    state.pressStartedAt = performance.now();
+    state.element.classList.add('is-pressed');
+  };
+
+  const abortPress = () => {
+    const state = active;
+    active = null;
+    dropPress(state);
+  };
+
+  // 点按结束。卡片先补足 PRESS_DEPTH_DURATION：即使几十毫秒就抬手，
+  // 也会先压到 0.965 再走 420ms 回弹，保证每次动画深度相同。
+  const endPress = () => {
+    const state = active;
+    active = null;
+    if (!state) return;
+    cancelDelay(state);
+    if (!state.card || state.abandoned) {
+      dropPress(state);
+      return;
+    }
+    if (!state.pressed) {
+      state.pressed = true;
+      state.pressStartedAt = performance.now();
+      state.element.classList.add('is-pressed');
+    }
+    const remaining = PRESS_DEPTH_HOLD - (performance.now() - state.pressStartedAt);
+    if (remaining <= 0) {
+      dropPress(state);
+      return;
+    }
+    pendingRelease = {
+      element: state.element,
+      timer: window.setTimeout(() => {
+        pendingRelease = null;
+        state.element.classList.remove('is-pressed');
+      }, remaining)
+    };
+  };
+
+  const isInside = (element, x, y) => {
+    const bounds = element.getBoundingClientRect();
+    return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
   };
 
   document.addEventListener('pointerdown', (event) => {
     if (!event.isPrimary || event.button > 0) return;
-    const target = event.target instanceof Element
-      ? event.target.closest('button:not(:disabled), [role="button"], .add-picker__button, .capture-button')
-      : null;
-    if (!target) return;
-    release();
-    pressed = target;
-    target.classList.add('is-pressed');
-    const bounds = target.getBoundingClientRect();
-    target.style.setProperty('--ripple-x', `${event.clientX - bounds.left}px`);
-    target.style.setProperty('--ripple-y', `${event.clientY - bounds.top}px`);
-    target.classList.remove('ripple-active');
-    void target.offsetWidth;
-    target.classList.add('ripple-active');
+    const element = pressTargetFor(event.target);
+    if (!element) return;
+    abortPress();
+    flushPendingRelease();
+    const state = {
+      element,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      pressed: false,
+      pressStartedAt: 0,
+      abandoned: false,
+      keyboard: false,
+      card: element.matches(PRESS_CARD_SELECTOR),
+      delayed: element.matches(PRESS_DELAYED_SELECTOR),
+      delayTimer: null
+    };
+    active = state;
+    if (state.delayed) state.delayTimer = window.setTimeout(() => showPress(state), PRESS_DELAY);
+    else showPress(state);
   }, true);
+
   document.addEventListener('pointermove', (event) => {
-    if (!pressed || !event.isPrimary) return;
-    const bounds = pressed.getBoundingClientRect();
-    const inside = event.clientX >= bounds.left && event.clientX <= bounds.right
-      && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
-    pressed.classList.toggle('is-pressed', inside);
+    const state = active;
+    if (!state || state.keyboard || state.abandoned || event.pointerId !== state.pointerId) return;
+    const dx = event.clientX - state.startX;
+    const dy = event.clientY - state.startY;
+    // 卡片：按下过程中只要开始滚动，本轮就彻底不再显示按下效果
+    if (state.delayed && Math.hypot(dx, dy) > PRESS_SCROLL_TOLERANCE) {
+      state.abandoned = true;
+      active = null;
+      dropPress(state);
+      return;
+    }
+    if (state.delayed) return;
+    // 其余元素：移出撤销、移回恢复
+    state.element.classList.toggle('is-pressed', isInside(state.element, event.clientX, event.clientY));
   }, true);
-  document.addEventListener('pointerup', release, true);
-  document.addEventListener('pointercancel', release, true);
-  window.addEventListener('blur', release);
+
+  document.addEventListener('pointerup', endPress, true);
+  document.addEventListener('pointercancel', abortPress, true);
+  document.addEventListener('pointerleave', (event) => {
+    const state = active;
+    if (!state || state.keyboard || state.abandoned || event.target !== state.element) return;
+    if (state.delayed) {
+      state.abandoned = true;
+      active = null;
+      dropPress(state);
+      return;
+    }
+    state.element.classList.remove('is-pressed');
+  }, true);
+
+  const isActivationKey = (event) => event.key === ' ' || event.key === 'Enter';
+
+  document.addEventListener('keydown', (event) => {
+    if (!isActivationKey(event) || event.repeat) return;
+    const element = pressTargetFor(event.target);
+    if (!element) return;
+    abortPress();
+    flushPendingRelease();
+    active = {
+      element,
+      pointerId: null,
+      startX: 0,
+      startY: 0,
+      pressed: true,
+      pressStartedAt: performance.now(),
+      abandoned: false,
+      keyboard: true,
+      card: element.matches(PRESS_CARD_SELECTOR),
+      delayed: false,
+      delayTimer: null
+    };
+    element.classList.add('is-pressed');
+  }, true);
+
+  document.addEventListener('keyup', (event) => {
+    if (!isActivationKey(event)) return;
+    const state = active;
+    if (!state?.keyboard || event.target !== state.element) return;
+    endPress();
+  }, true);
+
+  document.addEventListener('focusout', (event) => {
+    if (!active?.keyboard || event.target !== active.element) return;
+    abortPress();
+  }, true);
+
+  window.addEventListener('blur', () => {
+    flushPendingRelease();
+    abortPress();
+  });
 }
 
 function settingsMotionElements() {
@@ -753,16 +1003,6 @@ function localDateKey(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-function formatDateTime(value, allDay = false) {
-  if (!value) return '时间待确认';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('zh-CN', allDay
-    ? { year: 'numeric', month: 'long', day: 'numeric' }
-    : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }
-  ).format(date);
-}
-
 function statusLabel(status) {
   return { interested: '感兴趣', registered: '已报名', skipped: '不参加' }[status] || '感兴趣';
 }
@@ -830,7 +1070,7 @@ function cancelActivePageAnimation() {
   activePageAnimation = null;
 }
 
-async function animatePage(page, target, { duration = 250, easing = motionEasing() } = {}) {
+async function animatePage(page, target, { duration = 360, easing = motionEasing() } = {}) {
   if (!page) return false;
   cancelActivePageAnimation();
   const computed = getComputedStyle(page);
@@ -859,7 +1099,7 @@ async function transitionRoute(hash, direction = 'forward', updateHistory = true
     const completed = await animatePage(currentPage, {
       transform: 'translateX(34px)',
       opacity: 0
-    }, { duration: 240 });
+    }, { duration: 340 });
     if (!completed || sequence !== navigationSequence) return;
   } else {
     cancelActivePageAnimation();
@@ -874,12 +1114,12 @@ async function transitionRoute(hash, direction = 'forward', updateHistory = true
   if (direction === 'forward') {
     nextPage.style.transform = 'translateX(34px)';
     nextPage.style.opacity = '0.72';
-    await animatePage(nextPage, { transform: 'translateX(0)', opacity: 1 }, { duration: 260 });
+    await animatePage(nextPage, { transform: 'translateX(0)', opacity: 1 }, { duration: 380 });
   } else {
     nextPage.style.transform = 'translateX(0)';
     nextPage.style.opacity = '0';
     await animatePage(nextPage, { transform: 'translateX(0)', opacity: 1 }, {
-      duration: 190,
+      duration: 300,
       easing: motionEasing('--motion-direct')
     });
   }
@@ -945,6 +1185,8 @@ function showToast(message) {
   }, 2_000);
 }
 
+// 调用方必须把它放在 <main class="page"> 之外：.toast 是 position: fixed，而 .page 的
+// will-change: transform 会为 fixed 后代创建包含块，导致它相对整页定位。
 function toastMarkup() {
   return `<div id="toast-root" aria-live="polite">${ui.toast
     ? `<div class="toast"><span>✓</span>${escapeHtml(ui.toast)}</div>`
@@ -991,15 +1233,81 @@ function isUrgentDeadline(event, now = new Date()) {
   return Number.isFinite(difference) && difference >= 0 && difference <= 24 * 60 * 60 * 1000;
 }
 
-function eventDateParts(event) {
+function eventDateParts(event, now = new Date()) {
   if (!event.start) return { month: '日期', day: '—', weekday: '待定' };
   const date = new Date(event.start);
   if (Number.isNaN(date.getTime())) return { month: '日期', day: '—', weekday: '待定' };
   return {
-    month: `${date.getMonth() + 1}月`,
+    // 年份只在不是今年时出现，所有活动用同一套规则
+    month: date.getFullYear() === now.getFullYear()
+      ? `${date.getMonth() + 1}月`
+      : `${date.getFullYear()}年${date.getMonth() + 1}月`,
     day: String(date.getDate()).padStart(2, '0'),
     weekday: new Intl.DateTimeFormat('zh-CN', { weekday: 'short' }).format(date)
   };
+}
+
+// 活动跨度的本地起止“日”。缺结束时间时按开始日算，两者都无效时返回 null。
+// 日期的取值与比较一律走 localDateKey，不使用 toISOString 等 UTC 方法。
+function eventDayRange(event) {
+  const rawStart = event.start ? new Date(event.start) : null;
+  const start = rawStart && !Number.isNaN(rawStart.getTime()) ? rawStart : null;
+  const rawEnd = event.end ? new Date(event.end) : null;
+  const end = rawEnd && !Number.isNaN(rawEnd.getTime()) ? rawEnd : null;
+  if (!start && !end) return null;
+  const startDay = startOfLocalDay(start || end);
+  const endDay = startOfLocalDay(end || start);
+  return endDay < startDay ? { start: startDay, end: startDay } : { start: startDay, end: endDay };
+}
+
+function isMultiDay(event) {
+  const range = eventDayRange(event);
+  return !!range && localDateKey(range.start) !== localDateKey(range.end);
+}
+
+// 跨天活动且今天落在区间内时，在状态胶囊前提示进度。
+function ongoingBadge(event, now = new Date()) {
+  const range = eventDayRange(event);
+  if (!range || !isMultiDay(event)) return '';
+  const todayKey = localDateKey(now);
+  if (localDateKey(range.start) > todayKey || localDateKey(range.end) < todayKey) return '';
+  const remaining = Math.round((range.end.getTime() - startOfLocalDay(now).getTime()) / 86400000);
+  return remaining <= 0
+    ? '<span class="ongoing-badge ongoing-badge--last">今天结束</span>'
+    : `<span class="ongoing-badge">进行中 · 还剩${remaining}天</span>`;
+}
+
+function formatClock(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatDayLabel(date, now = new Date(), forceYear = false) {
+  const base = `${date.getMonth() + 1}月${date.getDate()}日`;
+  return forceYear || date.getFullYear() !== now.getFullYear()
+    ? `${date.getFullYear()}年${base}`
+    : base;
+}
+
+// 卡片右侧第二行：单日活动给“时间 · 地点”，跨天活动给“日期区间 · 地点”。
+// 没有地点时只留前半段，没有时间时用“时间待定”。
+function cardScheduleText(event, now = new Date()) {
+  const range = eventDayRange(event);
+  let primary;
+  if (range && isMultiDay(event)) {
+    // 跨年区间两端都带年份，否则“12月30日–1月2日”看不出跨了年
+    const crossYear = range.start.getFullYear() !== range.end.getFullYear();
+    primary = `${formatDayLabel(range.start, now, crossYear)}–${formatDayLabel(range.end, now, crossYear)}`;
+  } else if (!event.start) {
+    primary = '时间待定';
+  } else if (event.allDay) {
+    primary = '全天';
+  } else {
+    primary = formatClock(event.start) || '时间待定';
+  }
+  const location = String(event.location || '').trim();
+  return location ? `${primary} · ${location}` : primary;
 }
 
 function startOfLocalDay(date) {
@@ -1027,22 +1335,22 @@ function todayCalendarMarkup(now = new Date()) {
       <strong>${String(now.getDate()).padStart(2, '0')}</strong>
     </div>
     <div class="today-calendar__detail">
-      <b>${weekday}</b>
-      <span>${now.getMonth() + 1}月${now.getDate()}日</span>
+      <b>${now.getMonth() + 1}月 · ${weekday}</b>
       ${week ? `<small>${TERM_CONFIG.label}第${week}周</small>` : ''}
     </div>
   </section>`;
 }
 
 function groupUpcomingEvents(items, now = new Date()) {
+  const todayKey = localDateKey(now);
   const today = startOfLocalDay(now);
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const dayAfterTomorrow = new Date(today);
-  dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 2);
+  const tomorrowKey = localDateKey(tomorrow);
   const weekEnd = new Date(today);
   const mondayIndex = (today.getDay() + 6) % 7;
   weekEnd.setDate(weekEnd.getDate() + (7 - mondayIndex));
+  const weekEndKey = localDateKey(weekEnd);
   const groups = [
     { label: '今天', events: [] },
     { label: '明天', events: [] },
@@ -1050,11 +1358,19 @@ function groupUpcomingEvents(items, now = new Date()) {
     { label: '以后', events: [] }
   ];
   for (const event of items) {
-    const start = event.start ? new Date(event.start) : null;
-    if (!start || Number.isNaN(start.getTime()) || start >= weekEnd) groups[3].events.push(event);
-    else if (start >= dayAfterTomorrow) groups[2].events.push(event);
-    else if (start >= tomorrow) groups[1].events.push(event);
-    else groups[0].events.push(event);
+    const range = eventDayRange(event);
+    // 没有可用日期的活动归入“以后”
+    if (!range) {
+      groups[3].events.push(event);
+      continue;
+    }
+    const startKey = localDateKey(range.start);
+    const endKey = localDateKey(range.end);
+    // 已结束的由调用方单独筛出；这里按“今天是否落在区间内”归组
+    if (startKey <= todayKey && todayKey <= endKey) groups[0].events.push(event);
+    else if (startKey === tomorrowKey) groups[1].events.push(event);
+    else if (startKey <= weekEndKey) groups[2].events.push(event);
+    else groups[3].events.push(event);
   }
   return groups.filter((group) => group.events.length);
 }
@@ -1066,13 +1382,12 @@ function activityGroupsMarkup(items, now) {
   </section>`).join('');
 }
 
+// “已结束”只看日期的先后：结束日早于今天才算结束。
+// 只有日期没有时间的单日活动，因此会在当天 23:59 之后自然落入“已结束”。
 function isEnded(event, now = new Date()) {
-  const endValue = event.end || event.start;
-  if (!endValue) return false;
-  const end = new Date(endValue);
-  if (Number.isNaN(end.getTime())) return false;
-  if (!event.end && !event.allDay) end.setHours(end.getHours() + 1);
-  return end.getTime() < now.getTime();
+  const range = eventDayRange(event);
+  if (!range) return false;
+  return localDateKey(range.end) < localDateKey(now);
 }
 
 function sortByStart(left, right) {
@@ -1107,10 +1422,10 @@ function listCard(event, ended = false, endedIndex = 0) {
     </span>
     <span class="event-card__content">
       <span class="event-card__title">${escapeHtml(event.title || '未命名活动')}</span>
-      <span class="event-card__meta">${escapeHtml(formatDateTime(event.start, event.allDay))}</span>
-      <span class="event-card__meta">${escapeHtml(event.location || '地点待确认')}</span>
+      <span class="event-card__meta">${escapeHtml(cardScheduleText(event))}</span>
       <span class="event-card__status-row">
         <span class="event-category">${categoryOf(event)}</span>
+        ${ongoingBadge(event)}
         <span class="pill pill--${event.status}">${statusLabel(event.status)}</span>
         ${deadlineBadge(event)}
       </span>
@@ -1147,6 +1462,17 @@ async function exitSelectionMode() {
   await renderListPage();
 }
 
+// “管理”现在放在右上角 ⋮ 菜单里，进入与退出走同一个入口。
+async function toggleSelectionMode() {
+  await wait(90);
+  if (ui.selectionMode) {
+    await exitSelectionMode();
+    return;
+  }
+  ui.selectionMode = true;
+  ui.selectedEventIds.clear();
+  await renderListPage();
+}
 async function animateListDeletion(ids) {
   ids.forEach((id) => document.querySelector(`[data-row-id="${CSS.escape(id)}"]`)?.classList.add('event-card-row--deleting'));
   await wait(260);
@@ -1298,36 +1624,43 @@ function bindSwipeCards() {
   });
 }
 
+// 系统日历有可能以半透明 Activity 盖在本应用之上，此时我们的 Activity 只会 onPause、
+// 不会 onStop，而 Capacitor 仅在 onStop 时才发 appStateChange(isActive:false)。
+// 只靠那个事件会让 leftApp 一直为 false，等待永远不结束，按钮就卡在“打开中”。
+// 这里改用会在 onPause 触发的 pause / resume 事件判断返回，并保留 appStateChange 兜底；
+// 再加一个宽限期，防止漏掉 pause 时彻底卡死。
+const APP_RETURN_GRACE = 800;
+const APP_RETURN_TIMEOUT = 5 * 60 * 1000;
+
 async function createAppReturnWaiter() {
   let leftApp = false;
   let resolved = false;
   let resolveWait;
+  const startedAt = performance.now();
   const promise = new Promise((resolve) => { resolveWait = resolve; });
-  const listener = await CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-    if (!isActive) leftApp = true;
-    if (isActive && leftApp && !resolved) {
-      resolved = true;
-      clearTimeout(timeout);
-      void listener.remove();
-      resolveWait();
-    }
-  });
-  const timeout = setTimeout(() => {
+  const handles = [];
+  let timeout = null;
+
+  const finish = () => {
     if (resolved) return;
     resolved = true;
-    void listener.remove();
+    window.clearTimeout(timeout);
+    handles.forEach((handle) => void handle.remove());
     resolveWait();
-  }, 5 * 60 * 1000);
-  return {
-    promise,
-    cancel() {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timeout);
-      void listener.remove();
-      resolveWait();
-    }
   };
+  const markLeft = () => { leftApp = true; };
+  const markReturned = () => {
+    if (leftApp || performance.now() - startedAt >= APP_RETURN_GRACE) finish();
+  };
+
+  handles.push(await CapacitorApp.addListener('pause', markLeft));
+  handles.push(await CapacitorApp.addListener('resume', markReturned));
+  handles.push(await CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+    if (isActive) markReturned();
+    else markLeft();
+  }));
+  timeout = window.setTimeout(finish, APP_RETURN_TIMEOUT);
+  return { promise, cancel: finish };
 }
 
 async function launchCalendarStep(action, waitForReturn) {
@@ -1376,12 +1709,13 @@ async function renderListPage() {
   ui.openSwipeId = null;
   ui.selectedEventIds = new Set([...ui.selectedEventIds].filter((id) => events.some((event) => event.id === id)));
 
+  // .fab / .bulk-toolbar / #toast-root 都是 position: fixed，必须渲染在 .page 之外。
+  // .page 带 will-change: transform，会为 fixed 后代创建包含块，使它们相对整页而不是
+  // 视口定位——列表一长，加号就落到文档底部，看起来像凭空消失。
   app.innerHTML = `<main class="${pageClass(`list-page ${ui.selectionMode ? 'list-page--manage' : ''}`)}">
     <header class="compact-header">
-      <h1>活动</h1>
+      <h1>活动<span class="compact-header__count">${events.length} 项</span></h1>
       <div class="compact-header__actions">
-        <span class="count-badge">${events.length} 项</span>
-        ${events.length ? `<button class="manage-button" id="manage-button" type="button">${ui.selectionMode ? '完成' : '管理'}</button>` : ''}
         <button class="icon-button app-bar-action" id="settings-button" type="button" aria-label="打开菜单">⋮</button>
       </div>
     </header>
@@ -1409,15 +1743,14 @@ async function renderListPage() {
         <div class="ended-list-inner"><div class="event-list">${ended.map((event, index) => listCard(event, true, index)).join('')}</div></div>
       </div>
     </section>` : ''}
-
-    ${ui.selectionMode ? `<div class="bulk-toolbar">
-      <span id="selection-count">已选择 ${ui.selectedEventIds.size} 项</span>
-      <button class="button button--secondary" id="cancel-selection" type="button">取消</button>
-      <button class="button button--calendar-compact" id="bulk-calendar-button" type="button" ${ui.selectedEventIds.size ? '' : 'disabled'}>加入日历</button>
-      <button class="button button--danger" id="bulk-delete-button" type="button" ${ui.selectedEventIds.size ? '' : 'disabled'}>删除所选</button>
-    </div>` : '<button class="fab" id="add-button" aria-label="添加活动">＋</button>'}
-    ${toastMarkup()}
-  </main>`;
+  </main>
+  ${ui.selectionMode ? `<div class="bulk-toolbar">
+    <span id="selection-count">已选择 ${ui.selectedEventIds.size} 项</span>
+    <button class="button button--secondary" id="cancel-selection" type="button">取消</button>
+    <button class="button button--calendar-compact" id="bulk-calendar-button" type="button" ${ui.selectedEventIds.size ? '' : 'disabled'}>加入日历</button>
+    <button class="button button--danger" id="bulk-delete-button" type="button" ${ui.selectedEventIds.size ? '' : 'disabled'}>删除所选</button>
+  </div>` : '<button class="fab" id="add-button" aria-label="添加活动">＋</button>'}
+  ${toastMarkup()}`;
 
   document.querySelector('#add-button')?.addEventListener('click', () => navigateTo('#/add'));
   document.querySelector('#settings-button')?.addEventListener('click', openSettingsDrawer);
@@ -1427,16 +1760,6 @@ async function renderListPage() {
     const wrap = document.querySelector('#ended-list-wrap');
     button?.setAttribute('aria-expanded', String(ui.endedExpanded));
     wrap?.classList.toggle('is-open', ui.endedExpanded);
-  });
-  document.querySelector('#manage-button')?.addEventListener('click', async () => {
-    await wait(90);
-    if (ui.selectionMode) {
-      await exitSelectionMode();
-    } else {
-      ui.selectionMode = true;
-      ui.selectedEventIds.clear();
-      await renderListPage();
-    }
   });
   document.querySelector('#cancel-selection')?.addEventListener('click', exitSelectionMode);
   document.querySelector('#resume-pending')?.addEventListener('click', () => {
@@ -1648,15 +1971,21 @@ function selectInputPanel() {
   return `<section class="add-picker add-methods">
     <input id="add-image-input" data-image-input class="visually-hidden" type="file" accept="image/*">
     <label class="add-picker__button" for="add-image-input">
-      <span class="capture-button__icon">＋</span>
+      <span class="capture-button__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4.5" width="18" height="15" rx="3"></rect>
+          <circle cx="8.5" cy="10" r="1.4"></circle>
+          <path d="M20.6 15.4 15.8 10.6 6.4 20"></path>
+        </svg>
+      </span>
       <span><strong>选择通知截图</strong><small>支持海报、群聊和公众号截图</small></span>
     </label>
     <form class="text-extract-card" id="text-extract-form">
       <div class="text-extract-card__heading"><span class="text-preview-icon">文</span><div><strong>粘贴通知文字</strong><small>适合群消息、公众号正文或邮件</small></div></div>
       <textarea name="noticeText" maxlength="10000" placeholder="在这里粘贴活动通知内容…" aria-label="活动通知文字"></textarea>
-      <button class="button button--primary" type="submit">从文字提取</button>
+      <button class="button button--extract" id="text-extract-button" type="submit" disabled>从文字提取</button>
     </form>
-    <p>图片和文字只用于识别本次活动信息</p>
+    <p>识别时，图片或文字会发送至智谱 AI，App 不会保存或上传到其他地方。</p>
   </section>`;
 }
 
@@ -1902,16 +2231,12 @@ async function renderAddPage() {
           ? selectInputPanel()
           : recognitionPanel()}
     </div>
-    ${toastMarkup()}
-  </main>`;
+  </main>
+  ${toastMarkup()}`;
 
-  document.querySelector('#back-button').addEventListener('click', async () => {
-    if (WORKING_STATES.includes(ui.recognitionStatus)) {
-      if (!await confirmAction('当前通知仍在识别，返回后将终止本次识别。', { title: '放弃本次识别？', confirmLabel: '放弃', danger: true })) return;
-      cancelRecognition();
-    }
-    await navigateBackToList();
-  });
+  // 顶部应用栏的返回与安卓返回键走同一个处理函数，保证行为一致
+  // （识别中先确认、设置弹层与对话框优先关闭等）。
+  document.querySelector('#back-button').addEventListener('click', handleBack);
   bindImageInputs();
   bindTextInput();
   document.querySelector('#cancel-recognition')?.addEventListener('click', cancelRecognition);
@@ -1934,9 +2259,9 @@ async function renderEditPage(id) {
       <h1>编辑活动</h1>
     </header>
     <div class="secondary-content">${eventFormMarkup(event, { mode: 'edit' })}</div>
-    ${toastMarkup()}
-  </main>`;
-  document.querySelector('#back-button').addEventListener('click', navigateBackToList);
+  </main>
+  ${toastMarkup()}`;
+  document.querySelector('#back-button').addEventListener('click', handleBack);
   bindEventForm(event, { mode: 'edit' });
 }
 
@@ -1946,12 +2271,39 @@ function bindImageInputs() {
   });
 }
 
+const TEXTAREA_MAX_LINES = 8;
+
+// 随内容自动增高，超过 maxLines 行后改为内部滚动（配合 CSS 的 resize: none）。
+function autoGrowTextarea(textarea, maxLines = TEXTAREA_MAX_LINES) {
+  if (!textarea) return;
+  const styles = getComputedStyle(textarea);
+  const fontSize = parseFloat(styles.fontSize) || 16;
+  const lineHeight = parseFloat(styles.lineHeight) || fontSize * 1.6;
+  const padding = (parseFloat(styles.paddingTop) || 0) + (parseFloat(styles.paddingBottom) || 0);
+  const border = (parseFloat(styles.borderTopWidth) || 0) + (parseFloat(styles.borderBottomWidth) || 0);
+  const maxHeight = lineHeight * maxLines + padding + border;
+  textarea.style.height = 'auto';
+  const needed = textarea.scrollHeight + border;
+  textarea.style.height = `${Math.min(needed, maxHeight)}px`;
+  textarea.style.overflowY = needed > maxHeight ? 'auto' : 'hidden';
+}
+
 function bindTextInput() {
-  document.querySelector('#text-extract-form')?.addEventListener('submit', async (event) => {
+  const form = document.querySelector('#text-extract-form');
+  if (!form) return;
+  const textarea = form.querySelector('textarea');
+  const submitButton = form.querySelector('#text-extract-button');
+  const syncSubmit = () => {
+    if (submitButton) submitButton.disabled = textarea.value.trim().length === 0;
+    autoGrowTextarea(textarea);
+  };
+  textarea.addEventListener('input', syncSubmit);
+  syncSubmit();
+  form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const text = String(new FormData(event.currentTarget).get('noticeText') || '').trim();
     if (!text) {
-      event.currentTarget.querySelector('textarea')?.focus();
+      textarea.focus();
       showToast('请先粘贴通知文字');
       return;
     }

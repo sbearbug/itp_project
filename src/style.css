@@ -10,6 +10,7 @@
   --motion-direct: linear(0, .18 12%, .44 30%, .68 50%, .86 68%, .96 84%, 1);
   --motion-spring-soft: linear(0, .009, .035 2.1%, .141 4.4%, .723 12.9%, .938 16.7%, 1.017 20.4%, 1.043 24.2%, 1.038 28.8%, 1.006 39.4%, .999 51.5%, 1);
   --motion-press: linear(0, .46 35%, .82 68%, 1);
+  --motion-press-release: linear(0, .22 8%, .62 18%, .95 28%, 1.06 38%, 1.04 48%, 1 60%, .99 75%, 1);
 }
 
 @font-face {
@@ -20,7 +21,7 @@
   font-display: swap;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body { margin: 0; min-width: 320px; min-height: 100vh; overflow-x: hidden; background: var(--surface); }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; transition: transform 150ms ease-out, box-shadow 150ms ease-out; -webkit-tap-highlight-color: transparent; }
@@ -28,16 +29,14 @@ button { color: inherit; transition: transform 150ms ease-out, box-shadow 150ms 
 body.settings-open { overflow: hidden; }
 body.settings-open #app { transform: translateX(min(84vw, 360px)); }
 .page { width: min(100%, 680px); min-height: 100vh; margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 20px max(40px, env(safe-area-inset-bottom)); will-change: transform, opacity; }
-.page--fade-in { animation: fade-in 220ms ease-out both; }
-.page--enter-right { animation: page-in-right 250ms ease-out both; }
-.page--exit-right { animation: page-out-right 250ms ease-out both; pointer-events: none; }
+.page--fade-in { animation: fade-in 320ms ease-out both; }
+.page--enter-right { animation: page-in-right 380ms ease-out both; }
+.page--exit-right { animation: page-out-right 380ms ease-out both; pointer-events: none; }
 .list-page { padding-bottom: max(110px, calc(env(safe-area-inset-bottom) + 100px)); }
 
 .compact-header { display: flex; align-items: center; justify-content: space-between; min-height: 58px; margin-bottom: 22px; }
 .compact-header h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 31px; }
 .compact-header__actions { display: flex; align-items: center; gap: 8px; }
-.count-badge { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 9px; border: 1px solid var(--divider); border-radius: 999px; color: var(--btn); background: var(--on-btn); font-size: 13px; font-weight: 800; }
-.manage-button { min-height: 32px; padding: 0 11px; border: 1px solid var(--divider); border-radius: 999px; color: var(--btn); background: var(--on-btn); font-size: 12px; font-weight: 750; cursor: pointer; }
 .activity-list { display: grid; gap: 10px; }
 .event-card__bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .event-card--ended { filter: grayscale(.5); opacity: .55; }
@@ -174,7 +173,7 @@ body.settings-open .settings-drawer { transform: translateX(0); }
 .event-card-actions { position: absolute; z-index: 0; top: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 72px 64px; width: 136px; overflow: hidden; border-radius: 0 19px 19px 0; opacity: 0; background: var(--surface-2); transition: opacity 150ms ease-out; will-change: opacity; }
 .event-card-row--open .event-card-actions, .event-card-row--dragging .event-card-actions { opacity: 1; }
 .event-swipe-action { border: 0; font-size: 12px; font-weight: 750; cursor: pointer; }
-.event-swipe-action--calendar { margin-left: -1px; border-radius: 0 10px 10px 0; color: var(--text); background: var(--surface-2); }
+.event-swipe-action--calendar { margin-left: -1px; border-radius: 0 10px 10px 0; color: var(--date-text); background: var(--date-bg); }
 .event-swipe-action--delete { margin-left: 4px; border-radius: 10px 19px 19px 10px; color: var(--surface); background: var(--urgent-text); }
 .event-swipe-action:disabled { cursor: wait; opacity: .72; }
 .selection-check { display: grid; place-items: center; width: 21px; height: 21px; flex: 0 0 auto; border: 1.5px solid var(--btn); border-radius: 50%; color: var(--surface); background: transparent; font-size: 12px; }
@@ -188,7 +187,6 @@ body.settings-open .settings-drawer { transform: translateX(0); }
 .button--danger { border: 0; color: var(--surface); background: var(--urgent-text); }
 .button--calendar-compact { border: 0; color: var(--text); background: var(--surface-2); }
 .pill { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; color: var(--text); background: var(--surface-2); font-size: 11px; font-weight: 700; }
-.pill--pending { color: var(--text); background: var(--surface-2); }
 .pill--registered { color: var(--surface); background: var(--btn); }
 .pill--skipped { color: var(--text-2); background: var(--surface-2); }
 .empty-state { display: grid; place-items: center; align-content: center; gap: 14px; min-height: 190px; border: 1px dashed var(--divider); border-radius: 22px; color: var(--text-2); text-align: center; }
@@ -282,11 +280,7 @@ body.settings-open .settings-drawer { transform: translateX(0); }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes manage-mode-in { from { opacity: .45; } to { opacity: 1; } }
 @keyframes bulk-toolbar-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
-button:not(:disabled):active, button.is-pressed { transform: scale(.96); box-shadow: inset 0 0 0 999px var(--surface-2); }
-.add-picker__button.is-pressed, .capture-button.is-pressed { transform: scale(.975); box-shadow: 0 8px 20px var(--divider), inset 0 0 0 999px var(--surface-2); filter: brightness(.96); }
-.event-card:not(:disabled):active, .event-card.is-pressed { transform: scale(.985); }
-.event-card-row--open .event-card:not(:disabled):active,
-.event-card-row--open .event-card.is-pressed { transform: translateX(-136px) scale(.985); }
+/* 按下反馈已统一到文件末尾的 Material 覆盖层：按钮走 ::after 底色，卡片走 scale。 */
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton-card::after, .spinner, .button-spinner { animation: none; }
@@ -310,12 +304,6 @@ button:not(:disabled):active, button.is-pressed { transform: scale(.96); box-sha
   .fab { transition-property: opacity; }
   .fab--hidden { transform: none; }
   .add-picker__button { transition-property: opacity, filter; }
-  .add-picker__button:active { opacity: .86; transform: none; }
-  button:not(:disabled):active, button.is-pressed { transform: none; box-shadow: inset 0 0 0 999px var(--surface-2); }
-  .add-picker__button.is-pressed, .capture-button.is-pressed { opacity: .86; transform: none; }
-  .event-card:not(:disabled):active, .event-card.is-pressed,
-  .event-card-row--open .event-card:not(:disabled):active,
-  .event-card-row--open .event-card.is-pressed { transform: none; }
 }
 @media (max-width: 460px) {
   .app-dialog { padding: 21px; border-radius: 21px; }
@@ -551,10 +539,10 @@ body.settings-open #app { transform: none; }
 .result-card h3,
 .app-dialog h2,
 .settings-header h2 { font-family: inherit; letter-spacing: 0; }
-.compact-header h1 { font-size: 24px; font-weight: 680; line-height: 1.2; letter-spacing: -.015em; }
+.compact-header h1 { display: flex; align-items: baseline; gap: 8px; font-size: 24px; font-weight: 680; line-height: 1.2; letter-spacing: -.015em; }
+/* 活动数量跟在标题后面，作为小号次要文字 */
+.compact-header__count { color: var(--text-2); font-size: 13px; font-weight: 500; letter-spacing: 0; }
 .compact-header__actions { gap: 4px; }
-.count-badge { min-width: 0; height: 36px; padding: 0 10px; border: 0; color: var(--text-2); background: transparent; font-size: 13px; font-weight: 500; }
-.manage-button { min-height: 40px; padding: 0 12px; border: 0; border-radius: 20px; color: var(--text); background: transparent; font-size: 14px; font-weight: 600; }
 .app-bar-action { width: 40px; height: 40px; border: 0; background: transparent; font-size: 18px; }
 .secondary-header { grid-template-columns: 48px 1fr 48px; margin-bottom: 20px; }
 .secondary-header h1 { font-size: 22px; font-weight: 650; line-height: 1.25; letter-spacing: -.01em; }
@@ -641,13 +629,18 @@ body.settings-open #app { transform: none; }
 .event-card__status-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
 .selection-check { position: absolute; z-index: 2; top: 8px; left: 8px; border-color: var(--surface); color: var(--on-accent); background: var(--text-2); }
 .event-card--selected .selection-check { background: var(--accent); }
-.event-category, .pill { padding: 4px 8px; border-radius: var(--radius-pill); color: var(--text); background: var(--surface-2); font-size: 11px; font-weight: 650; line-height: 1.35; letter-spacing: .01em; }
-.pill { color: var(--text-2); background: var(--surface-2); }
-.pill--registered { color: var(--text); background: var(--surface-2); }
-.pill--skipped { color: var(--text-2); background: var(--surface-2); }
+/* 类型标签不带底色，只是小号次要文字；状态保留胶囊 */
+.event-category { padding: 0; color: var(--text-2); background: transparent; font-size: 11px; font-weight: 600; line-height: 1.35; letter-spacing: .01em; }
+.pill { padding: 4px 8px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 650; line-height: 1.35; letter-spacing: .01em; }
+.pill--interested { color: var(--text-2); background: var(--surface-2); }
+.pill--registered { color: var(--on-accent); background: var(--accent); }
+.pill--skipped { color: var(--text-2); background: var(--surface-2); opacity: .68; }
+/* 跨天活动进行中 / 今天结束 */
+.ongoing-badge { padding: 4px 8px; border-radius: var(--radius-pill); color: var(--text-2); background: var(--surface-2); font-size: 11px; font-weight: 650; line-height: 1.35; }
+.ongoing-badge--last { color: var(--urgent-text); background: var(--urgent-bg); }
 .deadline-badge { padding: 4px 8px; color: var(--urgent-text); background: var(--urgent-bg); font-size: 10px; }
-.event-card-actions { border-radius: 0 var(--radius-card) var(--radius-card) 0; background: var(--surface-2); transition-timing-function: var(--motion-direct); }
-.event-swipe-action--calendar { border-radius: 0; color: var(--text); background: var(--surface-2); }
+.event-card-actions { border-radius: 0 var(--radius-card) var(--radius-card) 0; background: var(--date-bg); transition-timing-function: var(--motion-direct); }
+.event-swipe-action--calendar { border-radius: 0; color: var(--date-text); background: var(--date-bg); }
 .event-swipe-action--delete { margin-left: 0; border-radius: 0 var(--radius-card) var(--radius-card) 0; color: var(--urgent-text); background: var(--urgent-bg); }
 
 .empty-state { border: 0; border-radius: var(--radius-card); color: var(--text-2); background: var(--surface); }
@@ -690,7 +683,7 @@ body.settings-open #app { transform: none; }
 .add-picker__button small { color: var(--on-btn); }
 .text-extract-card { border-radius: var(--radius-card); background: var(--surface); }
 .text-preview-icon { color: var(--text); background: var(--surface-2); font-family: inherit; }
-.text-extract-card textarea { border-color: var(--divider); border-radius: var(--radius-small); background: var(--surface); }
+.text-extract-card textarea { border-color: var(--divider); border-radius: var(--radius-small); background: var(--surface); resize: none; }
 .text-extract-card textarea:focus { border-color: var(--btn); box-shadow: inset 0 0 0 1px var(--btn); }
 .stage-indicator li.is-active, .stage-indicator li.is-complete { color: var(--text); }
 .stage-indicator li.is-complete::before, .stage-indicator li.is-active::before { background: var(--accent); }
@@ -728,6 +721,8 @@ body.settings-open #app { transform: none; }
   transition: none;
   will-change: transform;
   overscroll-behavior: contain;
+  /* 视图切换时内容会横向滑入滑出，这里裁掉横向溢出，避免出现横向滚动条 */
+  overflow-x: hidden;
 }
 body.settings-open .settings-drawer { transform: translate(-50%, 0); }
 body.settings-closing .settings-drawer { transform: translate(-50%, 100%); }
@@ -749,9 +744,25 @@ body.settings-dragging .settings-scrim { transition: none; }
 .settings-menu-item i { color: var(--text-2); font-size: 24px; font-style: normal; }
 .appearance-section { margin-top: 24px; }
 .appearance-section h3 { margin: 0 0 10px; color: var(--text-2); font-size: 13px; font-weight: 650; line-height: 1.4; letter-spacing: .01em; }
-.appearance-mode { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; border-radius: var(--radius-card); background: var(--surface-2); }
-.appearance-mode button { min-height: 42px; border-radius: 14px; color: var(--text-2); background: transparent; font-size: 13px; font-weight: 600; }
-.appearance-mode button[aria-pressed="true"] { color: var(--text); background: var(--surface); box-shadow: inset 0 0 0 1px var(--divider); }
+.appearance-mode { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; border-radius: var(--radius-card); background: var(--surface-2); }
+/* 选中态滑块。容器是 3 列 + 4px 间隙 + 4px 内边距，所以单列宽 = (100% - 16px) / 3。
+   位移由 main.js 的 modeThumbTransform() 直接写在行内样式上——只改自定义属性
+   不会触发 CSS 过渡，滑块会瞬移。 */
+.appearance-mode__thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc((100% - 16px) / 3);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--divider);
+  transition: transform 280ms var(--motion-spring-soft);
+  pointer-events: none;
+}
+.appearance-mode button { position: relative; z-index: 1; min-height: 42px; border-radius: 14px; color: var(--text-2); background: transparent; font-size: 13px; font-weight: 600; }
+/* 选中态的底色交给滑块，按钮本身不再自带背景 */
+.appearance-mode button[aria-pressed="true"] { color: var(--text); background: transparent; box-shadow: none; }
 .theme-options { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .theme-option { display: grid; grid-template-columns: 64px 1fr 24px; align-items: center; gap: 10px; min-height: 64px; padding: 10px 12px; border: 0; border-radius: var(--radius-card); color: var(--text); text-align: left; background: var(--surface-2); }
 .theme-option[aria-pressed="true"] { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
@@ -780,9 +791,20 @@ body.settings-dragging .settings-scrim { transition: none; }
 .theme-transition * {
   transition: color 200ms ease-out, background-color 200ms ease-out, border-color 200ms ease-out, fill 200ms ease-out, stroke 200ms ease-out !important;
 }
+/* 上面这条把 transition 简写整个换成了只剩颜色属性，模式滑块的位置过渡会被一起清掉，
+   表现为切换深浅模式时滑块瞬移。这里把位移过渡还给它：颜色交叉淡入和滑块滑动互不影响。 */
+.theme-transition .appearance-mode__thumb {
+  transition: transform 280ms var(--motion-spring-soft) !important;
+}
 
 /* Palette completion: every active state resolves through the tokens above. */
-.capture-button__icon { border-color: var(--on-btn); }
+/* 图标本身是线框图片，外层的描边方框不再需要 */
+.capture-button__icon { border: 0; color: var(--on-btn); }
+.capture-button__icon svg { width: 34px; height: 34px; }
+.add-picker__button .capture-button__icon svg { width: 40px; height: 40px; }
+/* “从文字提取”：空输入时浅色不可点，有内容才变成实心主按钮 */
+.button--extract:disabled { color: var(--text-2); background: var(--surface-2); cursor: not-allowed; opacity: 1; }
+.button--extract:not(:disabled) { color: var(--on-btn); background: var(--btn); }
 .spinner { border-color: var(--on-btn); border-top-color: var(--on-btn); }
 .message--error, .error-card, .app-dialog__mark--danger { color: var(--urgent-text); background: var(--urgent-bg); }
 .message--ok { color: var(--text); background: var(--surface-2); }
@@ -815,45 +837,59 @@ button, [role="button"], .add-picker__button, .capture-button {
   -webkit-tap-highlight-color: transparent;
 }
 .event-card { touch-action: pan-y; will-change: transform; }
-button::after, [role="button"]::after, .add-picker__button::after, .capture-button::after {
+/* ── 按下反馈 ──────────────────────────────────────────────────────────────
+   两套互斥反馈：卡片类缩放回弹，其余可点元素铺一层状态底色。
+   状态类统一为 .is-pressed，由 setupPressFeedback 用 Pointer Events 与键盘事件驱动。
+   卡片用独立的 scale 属性而非 transform，避免与左滑手势的 translateX 争抢同一属性。 */
+
+/* 表面元素（菜单项 / 列表项 / 图标按钮 / 次要按钮）的状态色。
+   用 :where() 把 :not(:disabled) 的特异性归零，否则它会盖过下面按按钮类型
+   写的 .fab::after / .button--primary::after 等覆盖规则。 */
+button:where(:not(:disabled))::after,
+[role="button"]::after {
   content: "";
   position: absolute;
+  inset: 0;
   z-index: 5;
-  left: var(--ripple-x, 50%);
-  top: var(--ripple-y, 50%);
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
+  border-radius: inherit;
   opacity: 0;
   pointer-events: none;
-  background: currentColor;
-  transform: translate(-50%, -50%) scale(0);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  transition: opacity 220ms ease-out;
 }
-.ripple-active::after { animation: material-ripple 420ms ease-out; }
-button:not(:disabled):active, button.is-pressed,
-.add-picker__button.is-pressed, .capture-button.is-pressed,
-.event-card:not(:disabled):active, .event-card.is-pressed { box-shadow: inherit; transform: none; filter: none; }
-.button:not(:disabled), .icon-button:not(:disabled), .manage-button:not(:disabled),
-.theme-option:not(:disabled), .settings-menu-item:not(:disabled),
-.add-picker__button, .capture-button {
-  transition: scale 140ms var(--motion-press), opacity 140ms var(--motion-direct);
-}
-.button:not(:disabled):active, .button.is-pressed,
-.icon-button:not(:disabled):active, .icon-button.is-pressed,
-.manage-button:not(:disabled):active, .manage-button.is-pressed,
-.theme-option:not(:disabled):active, .theme-option.is-pressed,
-.settings-menu-item:not(:disabled):active, .settings-menu-item.is-pressed,
-.add-picker__button.is-pressed, .capture-button.is-pressed { scale: .98; }
-.fab:not(:disabled):active, .fab.is-pressed { scale: .94; }
-.is-loading, [aria-busy="true"] { pointer-events: none; }
-.event-card-row--open .event-card:not(:disabled):active,
-.event-card-row--open .event-card.is-pressed { transform: translateX(-136px); }
+/* 实心按钮：状态色取按钮内容色 */
+.button--primary::after,
+.button--calendar::after,
+.button--calendar-compact::after,
+.capture-button::after,
+.add-picker__button::after,
+.empty-state__button::after { background: color-mix(in srgb, var(--on-btn) 14%, transparent); }
+/* 悬浮加号按钮 */
+.fab::after { background: color-mix(in srgb, var(--on-accent) 14%, transparent); }
+/* 卡片类只缩放，不铺底色（.today-calendar 不是 button，其 ::after 是撕纸边，天然不受影响） */
+.event-card::after,
+.theme-option::after { display: none; }
+button.is-pressed::after,
+[role="button"].is-pressed::after { opacity: 1; transition-duration: 60ms; }
 
-@keyframes material-ripple {
-  0% { opacity: .18; transform: translate(-50%, -50%) scale(0); }
-  70% { opacity: .10; }
-  100% { opacity: 0; transform: translate(-50%, -50%) scale(24); }
+/* 活动卡片的既有过渡在此重述并追加 scale；基础层若调整这些属性需同步这里 */
+.event-card {
+  scale: 1;
+  transition:
+    transform 250ms ease-out, opacity 250ms ease-out, max-height 250ms ease-out,
+    padding 250ms ease-out, border-width 250ms ease-out,
+    scale 420ms var(--motion-press-release);
 }
+.today-calendar,
+.theme-option {
+  scale: 1;
+  transition: scale 420ms var(--motion-press-release);
+}
+.event-card.is-pressed,
+.today-calendar.is-pressed,
+.theme-option.is-pressed { scale: .965; transition: scale 90ms ease-out; }
+
+.is-loading, [aria-busy="true"] { pointer-events: none; }
 @keyframes bottom-bar-in {
   from { opacity: 0; transform: translate(-50%, 12px); }
   to { opacity: 1; transform: translate(-50%, 0); }
@@ -879,7 +915,14 @@ button:not(:disabled):active, button.is-pressed,
 @media (prefers-reduced-motion: reduce) {
   .theme-transition,
   .theme-transition * { transition-duration: 0ms !important; }
-  .ripple-active::after { animation: none; }
+  /* 减少动画时卡片不做缩放回弹，只保留按钮的状态底色；
+     这里必须重述 .event-card 的过渡属性，以压过前面 Material 层的 transition 简写。 */
+  .event-card { transition-property: opacity, max-height, padding, border-width; }
+  .event-card.is-pressed,
+  .today-calendar.is-pressed,
+  .theme-option.is-pressed { scale: 1; }
+  /* 减少动画时模式滑块直接落位，不做滑动 */
+  .appearance-mode__thumb { transition: none; }
   .settings-drawer { transform: translate(-50%, 0); opacity: 0; }
   body.settings-open .settings-drawer { opacity: 1; }
   body.settings-closing .settings-drawer { opacity: 0; transform: translate(-50%, 0); }
