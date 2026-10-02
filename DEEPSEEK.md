@@ -30,7 +30,7 @@
 
 ## 1. 项目是什么
 
-`campus-demo` —— 校园活动助手 Demo。从**校园通知截图或粘贴的文字**里提取活动信息，
+`campus-demo` —— 落笺 Demo。从**校园通知截图或粘贴的文字**里提取活动信息，
 人工确认后加入系统日历。
 
 - **主产物是 Android APK**；本地网页 ZIP 只用于没有安卓设备的组员辅助体验。
@@ -43,7 +43,7 @@
 |---|---|
 | 框架 | Capacitor 8 + 原生 HTML/CSS/JS（**无前端框架**，不用 React/Vue） |
 | 构建 | Vite 7 |
-| 包名 | `com.itp.campusdemo` |
+| 包名 | `com.itp.notice` |
 | SDK | minSdk 24 / target & compile 36 |
 | JDK | 21 |
 | Node | 要求 22+（当前机器是 v26） |
@@ -70,7 +70,7 @@ campus-demo/
 ├── android/
 │   ├── app/build.gradle  ★ 版本号在这里（versionCode / versionName）
 │   └── app/src/main/
-│       ├── java/com/itp/campusdemo/
+│       ├── java/com/itp/notice/
 │       │   ├── MainActivity.java        冷启动选启动页样式
 │       │   ├── SystemBarsPlugin.java    导航栏配色 + 写 campus_theme 偏好
 │       │   └── CalendarIntentPlugin.java  ACTION_INSERT 拉起系统日历

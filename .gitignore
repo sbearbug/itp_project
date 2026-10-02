@@ -15,3 +15,7 @@ campus-demo-local.zip
 campus-demo-android.apk
 campus-demo-android-v*.apk
 schedule-official-v*.apk
+keystore.properties
+*.keystore
+android/.signing-password
+/release/

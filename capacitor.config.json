@@ -1,6 +1,6 @@
 {
-  "appId": "com.itp.campusdemo",
-  "appName": "校园活动助手",
+  "appId": "com.itp.notice",
+  "appName": "落笺",
   "webDir": "dist",
   "server": {
     "androidScheme": "https"

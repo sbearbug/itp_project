@@ -1,9 +1,15 @@
 import './style.css';
 import './intro.css';
-import emptyCalendarUrl from '../material/empty-calendar.svg?url';
+import appMetadata from '../package.json';
+import emptyCalendarSvg from '../material/empty-calendar.svg?raw';
 import { App as CapacitorApp } from '@capacitor/app';
 import { SplashScreen } from '@capacitor/splash-screen';
 import { isNative } from './platform.js';
+import { clipboardNotice, ignoreClipboardNotice, recentScreenshots, nativeImageFile, listenForSharedNotices } from './notice-inputs.js';
+import { normalizeActions, mergeActions, safeUrl, openActionUrl, saveQrImage } from './actions.js';
+import { scanImageQr, mergeQrActions, cropImage } from './qr.js';
+import { BottomSheet, Dialog, dismissTopOverlay, hasOpenOverlay } from './overlays.js';
+import { pickDate, pickTime, pickOption } from './pickers.js';
 import { CalendarGrid, calendarDays, parseDateKey } from './CalendarGrid.js';
 import { getTermSettings, loadTermSettings, saveTermSettings, termWeek } from './term.js';
 import { getIntroMode, playIntro } from './intro.js';
@@ -50,21 +56,25 @@ const seenUncertainIds = new Set();
 let events = [];
 let pendingEvents = [];
 let formError = '';
+let editorExitPrompt = null;
 let recognitionRunId = 0;
 let slowTimer = null;
 let statusTextTimer = null;
 let toastTimer = null;
 let listScrollHandler = null;
-let closeActiveDialog = null;
+let settingsSheet = null;
 let settingsRoot = null;
 let settingsGestureInstalled = false;
-let settingsCloseGestureInstalled = false;
 let pressFeedbackInstalled = false;
-let settingsAnimation = null;
-let settingsScrimAnimation = null;
 let activeSettingsViewAnimation = null;
 let activePageAnimation = null;
 let navigationSequence = 0;
+let batchRunId = 0;
+let inputsChecking = false;
+let lastInputCheck = 0;
+let addInputPageActive = false;
+let sharedInputQueue = Promise.resolve();
+const sharedNoticeIds = new Set();
 
 const ui = {
   booting: true,
@@ -75,6 +85,14 @@ const ui = {
   slow: false,
   statusTextIndex: 0,
   selectedFile: null,
+  clipboardText: '',
+  recentImages: [],
+  batchActive: false,
+  batchIndex: 0,
+  batchTotal: 0,
+  batchFailed: [],
+  batchSources: [],
+  acceptingShare: false,
   selectedText: '',
   recognitionSource: 'image',
   previewUrl: '',
@@ -154,47 +172,16 @@ function releasePointer(element, pointerId) {
   }
 }
 
-function appDialog({ title = '请确认', message, confirmLabel = '确认', cancelLabel = '取消', danger = false }) {
-  closeActiveDialog?.(false);
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'app-dialog-backdrop';
-    overlay.innerHTML = `<section class="app-dialog" role="alertdialog" aria-modal="true" aria-labelledby="app-dialog-title">
-      <div class="app-dialog__mark ${danger ? 'app-dialog__mark--danger' : ''}">${danger ? '!' : 'i'}</div>
-      <h2 id="app-dialog-title">${escapeHtml(title)}</h2>
-      <p>${escapeHtml(message)}</p>
-      <div class="app-dialog__actions">
-        ${cancelLabel ? `<button class="button button--secondary" type="button" data-dialog-cancel>${escapeHtml(cancelLabel)}</button>` : ''}
-        <button class="button ${danger ? 'button--danger' : 'button--primary'}" type="button" data-dialog-confirm>${escapeHtml(confirmLabel)}</button>
-      </div>
-    </section>`;
-    document.body.appendChild(overlay);
-
-    let finished = false;
-    const finish = (answer) => {
-      if (finished) return;
-      finished = true;
-      closeActiveDialog = null;
-      document.removeEventListener('keydown', onKeyDown);
-      overlay.classList.add('app-dialog-backdrop--leaving');
-      setTimeout(() => {
-        overlay.remove();
-        resolve(answer);
-      }, 220);
-    };
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape') finish(false);
-    };
-    closeActiveDialog = finish;
-    document.addEventListener('keydown', onKeyDown);
-    overlay.addEventListener('click', (event) => {
-      if (event.target === overlay) finish(false);
-    });
-    overlay.querySelector('[data-dialog-cancel]')?.addEventListener('click', () => finish(false));
-    overlay.querySelector('[data-dialog-confirm]').addEventListener('click', () => finish(true));
-    requestAnimationFrame(() => overlay.classList.add('app-dialog-backdrop--visible'));
-    overlay.querySelector('[data-dialog-cancel], [data-dialog-confirm]')?.focus();
-  });
+function appDialog({ title = '请确认', message, confirmLabel = '执行操作', cancelLabel = '取消', danger = false }) {
+  const dialog = new Dialog({ title, content: `<p class="ui-modal__message">${escapeHtml(message)}</p>
+    <div class="ui-modal__actions">
+      ${cancelLabel ? `<button class="button button--secondary" type="button" data-dialog-cancel>${escapeHtml(cancelLabel)}</button>` : ''}
+      <button class="button button--primary ${danger ? 'button--danger' : ''}" type="button" data-dialog-confirm>${escapeHtml(confirmLabel)}</button>
+    </div>` });
+  dialog.panel.querySelector('[data-dialog-cancel]')?.addEventListener('click', () => { void dialog.close(false); });
+  dialog.panel.querySelector('[data-dialog-confirm]').addEventListener('click', () => { void dialog.close(true); });
+  dialog.show();
+  return dialog.result.then(Boolean);
 }
 
 const confirmAction = (message, options = {}) => appDialog({ message, ...options });
@@ -217,83 +204,40 @@ async function getWebApiStatus() {
 }
 
 function openWebApiKeyDialog({ required = false } = {}) {
-  closeActiveDialog?.(false);
-  return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'app-dialog-backdrop';
-    overlay.innerHTML = `<form class="app-dialog api-key-dialog" aria-modal="true" aria-labelledby="api-key-dialog-title">
-      <div class="app-dialog__mark">◆</div>
-      <h2 id="api-key-dialog-title">配置识别接口</h2>
-      <p>接口密钥只会发送给本机服务并保存在当前文件夹中，不会写入网页代码。</p>
-      <label class="settings-field"><span>${escapeHtml(API_KEY_LABEL)}</span>
-        <input name="apiKey" type="password" placeholder="sk-..." autocomplete="off" required autofocus>
-        <small>保存后立即可以上传截图识别</small>
-      </label>
-      <div class="api-key-dialog__error" aria-live="polite"></div>
-      <div class="app-dialog__actions">
-        ${required ? '' : '<button class="button button--secondary" type="button" data-api-cancel>取消</button>'}
-        <button class="button button--primary" type="submit" data-api-save>保存并继续</button>
-      </div>
-    </form>`;
-    document.body.appendChild(overlay);
-
-    let finished = false;
-    const finish = (saved) => {
-      if (finished) return;
-      finished = true;
-      closeActiveDialog = null;
-      document.removeEventListener('keydown', onKeyDown);
-      overlay.classList.add('app-dialog-backdrop--leaving');
-      setTimeout(() => {
-        overlay.remove();
-        resolve(saved);
-      }, 220);
-    };
-    const onKeyDown = (event) => {
-      if (!required && event.key === 'Escape') finish(false);
-    };
-    closeActiveDialog = required ? () => {} : finish;
-    document.addEventListener('keydown', onKeyDown);
-    overlay.querySelector('[data-api-cancel]')?.addEventListener('click', () => finish(false));
-    overlay.addEventListener('click', (event) => {
-      if (!required && event.target === overlay) finish(false);
-    });
-    overlay.querySelector('form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const input = overlay.querySelector('[name="apiKey"]');
-      const button = overlay.querySelector('[data-api-save]');
-      const errorRoot = overlay.querySelector('.api-key-dialog__error');
-      const apiKey = input.value.trim();
-      if (!apiKey) {
-        errorRoot.textContent = '请填写接口密钥';
-        input.focus();
-        return;
-      }
-      button.disabled = true;
-      button.innerHTML = '<span class="button-spinner"></span>正在保存…';
-      errorRoot.textContent = '';
-      try {
-        const response = await fetch('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: apiKey })
-        });
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(body?.error?.message || '本地服务器无法保存设置');
-        finish(true);
-      } catch (error) {
-        input.value = '';
-        errorRoot.textContent = error.message || '保存失败，请重试';
-        button.disabled = false;
-        button.textContent = '保存并继续';
-        input.focus();
-      }
-    });
-    requestAnimationFrame(() => {
-      overlay.classList.add('app-dialog-backdrop--visible');
-      overlay.querySelector('[name="apiKey"]')?.focus();
-    });
+  const dialog = new Dialog({ title: '配置识别接口', content: `<form class="api-key-dialog" novalidate>
+    <p class="ui-modal__message">接口密钥只会发送给本机服务并保存在当前文件夹中，不会写入网页代码。</p>
+    <label class="settings-field"><span>${escapeHtml(API_KEY_LABEL)}</span>
+      <input name="apiKey" type="password" placeholder="输入接口密钥" autocomplete="off" required>
+      <small>保存后立即可以上传截图识别</small>
+    </label>
+    <div class="api-key-dialog__error" aria-live="polite"></div>
+    <div class="ui-modal__actions">
+      <button class="button button--secondary" type="button" data-api-cancel>取消</button>
+      <button class="button button--primary" type="submit" data-api-save>保存并继续</button>
+    </div>
+  </form>` });
+  dialog.panel.querySelector('[data-api-cancel]').onclick = () => { void dialog.close(false); };
+  dialog.panel.querySelector('form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = dialog.panel.querySelector('[name="apiKey"]');
+    const button = dialog.panel.querySelector('[data-api-save]');
+    const errorRoot = dialog.panel.querySelector('.api-key-dialog__error');
+    const apiKey = input.value.trim();
+    if (!apiKey) { errorRoot.textContent = '请填写接口密钥'; input.focus(); return; }
+    button.disabled = true; button.innerHTML = '<span class="button-spinner"></span>正在保存…'; errorRoot.textContent = '';
+    try {
+      const response = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: apiKey }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.error?.message || '本地服务器无法保存设置');
+      await dialog.close(true);
+    } catch (error) {
+      if (dialog.closed) return;
+      input.value = ''; errorRoot.textContent = error.message || '保存失败，请重试';
+      button.disabled = false; button.textContent = '保存并继续'; input.focus();
+    }
   });
+  dialog.show();
+  return dialog.result.then(Boolean);
 }
 
 async function ensureWebApiKey() {
@@ -356,7 +300,7 @@ function applyThemeSelection(theme) {
   settingsRoot?.querySelectorAll('[data-selected-theme]').forEach((button) => {
     const selected = button.dataset.selectedTheme === theme;
     button.setAttribute('aria-pressed', String(selected));
-    const mark = button.querySelector('b');
+    const mark = button.querySelector(':scope > b');
     if (mark) mark.textContent = selected ? '✓' : '';
   });
 }
@@ -366,11 +310,7 @@ async function renderSettingsDrawer({ transition = null } = {}) {
   const custom = native ? await getCustomApiConfig() : null;
   const webConfigured = native ? null : await getWebApiStatus();
   const appearance = getAppearanceSettings();
-  if (!settingsRoot) {
-    settingsRoot = document.createElement('div');
-    settingsRoot.id = 'settings-root';
-    document.body.appendChild(settingsRoot);
-  }
+  if (!settingsSheet || settingsSheet.closed) return;
 
   const backHeader = (title, description) => `<header class="settings-header settings-header--with-back">
     <button class="icon-button settings-back" type="button" data-settings-view="menu" aria-label="返回设置菜单">←</button>
@@ -401,6 +341,10 @@ async function renderSettingsDrawer({ transition = null } = {}) {
         <span class="settings-menu-item__icon">▦</span>
         <span><b>学期设置</b><small>${escapeHtml(getTermSettings().name)} · ${escapeHtml(getTermSettings().start)}</small></span><i>›</i>
       </button>
+      <button class="settings-menu-item" type="button" data-settings-view="about">
+        <span class="settings-menu-item__icon">ⓘ</span>
+        <span><b>关于落笺</b><small>版本 ${appMetadata.version}</small></span><i>›</i>
+      </button>
     </div>`;
 
   const appearanceMarkup = `${backHeader('外观', '主题会立即应用并保存在当前设备')}
@@ -427,7 +371,7 @@ async function renderSettingsDrawer({ transition = null } = {}) {
     </section>`;
 
   const apiMarkup = `${backHeader('识别接口', native ? (custom ? '正在使用自定义接口' : '正在使用内置演示接口') : (webConfigured ? '接口密钥已保存在本机' : '尚未配置接口密钥'))}
-    ${native ? `<form class="settings-form" id="api-settings-form">
+    ${native ? `<form class="settings-form" id="api-settings-form" novalidate>
       <label class="settings-field"><span>接口地址</span>
         <input name="apiBase" type="url" inputmode="url" value="${escapeHtml(custom?.apiBase || API_BASE)}" autocomplete="off">
         <small>填写与通用对话补全格式兼容的基础地址</small>
@@ -451,13 +395,16 @@ async function renderSettingsDrawer({ transition = null } = {}) {
 
   const term = getTermSettings();
   const termMarkup = `${backHeader('学期设置', '修改后重新计算教学周')}
-    <form class="settings-form" id="term-settings-form">
+    <form class="settings-form" id="term-settings-form" novalidate>
       <label class="settings-field"><span>学期名称</span><input name="name" value="${escapeHtml(term.name)}" maxlength="24" required></label>
-      <label class="settings-field"><span>开学日期</span><input name="start" type="date" value="${term.start}" required></label>
+      ${pickerFieldMarkup('开学日期', 'start', term.start, true, 'settings-field')}
       <p class="settings-note">教学周期为 ${TERM_CONFIG.totalWeeks} 周，学期外不显示教学周。</p>
       <button class="button button--primary" type="submit">保存学期</button>
     </form>`;
-  const content = ui.settingsView === 'term' ? termMarkup : ui.settingsView === 'appearance'
+  const aboutMarkup = `${backHeader('关于落笺', '把通知中的活动整理为日程')}
+    <section class="appearance-section"><h3>落笺</h3><p class="settings-note">版本 ${appMetadata.version}</p>
+    <p class="settings-note">应用 ID：com.itp.notice</p></section>`;
+  const content = ui.settingsView === 'about' ? aboutMarkup : ui.settingsView === 'term' ? termMarkup : ui.settingsView === 'appearance'
     ? appearanceMarkup
     : ui.settingsView === 'api'
       ? apiMarkup
@@ -473,13 +420,9 @@ async function renderSettingsDrawer({ transition = null } = {}) {
     await animateSettingsView(outgoing, { transform: 'translateX(34px)', opacity: 0 }, 340);
   }
 
-  settingsRoot.innerHTML = `<div class="settings-scrim" data-settings-close></div>
-    <aside class="settings-drawer" aria-label="设置" aria-hidden="${!ui.settingsOpen}">
-      <div class="settings-drawer__handle"></div>
-      <div class="settings-view">${content}</div>
-    </aside>`;
-
-  settingsRoot.querySelector('[data-settings-close]').addEventListener('click', closeSettingsDrawer);
+  if (!settingsSheet || settingsSheet.closed) return;
+  settingsSheet.content.innerHTML = `<div class="settings-view">${content}</div>`;
+  bindPickerFields(settingsSheet.content);
   settingsRoot.querySelectorAll('[data-settings-action]').forEach((button) => button.addEventListener('click', async () => {
     if (button.dataset.settingsAction !== 'manage') return;
     // 先收起菜单再切换管理模式，避免两次重绘打架
@@ -550,14 +493,16 @@ async function renderSettingsDrawer({ transition = null } = {}) {
     showToast('已恢复内置接口');
   });
   settingsRoot.querySelector('#web-api-key-button')?.addEventListener('click', async () => {
-    closeSettingsDrawer();
-    await wait(250);
+    await closeSettingsDrawer();
     if (await openWebApiKeyDialog()) {
       showToast('接口密钥已保存');
     }
   });
 
-  setupSettingsCloseGesture();
+  // 内容重绘会移除原焦点；即使仍在播放视图转场，也必须把焦点留在弹层内。
+  if (!transition || !settingsSheet.panel.contains(document.activeElement)) {
+    (settingsSheet.focusable()[0] || settingsSheet.panel).focus({ preventScroll: true });
+  }
 
   // 监听器绑定完再播入场动画，动画期间仍然可以点击
   const view = settingsRoot.querySelector('.settings-view');
@@ -571,82 +516,7 @@ async function renderSettingsDrawer({ transition = null } = {}) {
   }
 }
 
-function setupSettingsCloseGesture() {
-  if (settingsCloseGestureInstalled || !settingsRoot) return;
-  settingsCloseGestureInstalled = true;
-  const gestureSurface = settingsRoot;
-  let gesture = null;
 
-  gestureSurface.addEventListener('pointerdown', (event) => {
-    if (!ui.settingsOpen || !event.isPrimary || event.button > 0) return;
-    const drawer = settingsRoot.querySelector('.settings-drawer');
-    if (!drawer || !(event.target instanceof Element) || !event.target.closest('.settings-drawer')) return;
-    const interactive = event.target.closest('button, input, textarea, select, label');
-    const directSurface = event.target.closest('.settings-drawer__handle');
-    if (interactive || (!directSurface && drawer.scrollTop > 0)) return;
-    gesture = {
-      pointerId: event.pointerId,
-      drawer,
-      startX: event.clientX,
-      startY: event.clientY,
-      startProgress: readSettingsProgress(),
-      directSurface: Boolean(directSurface),
-      dragging: false,
-      samples: [{ y: event.clientY, time: performance.now() }]
-    };
-    cancelSettingsAnimations();
-    capturePointer(drawer, event.pointerId);
-  });
-
-  gestureSurface.addEventListener('pointermove', (event) => {
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    const deltaX = event.clientX - gesture.startX;
-    const deltaY = event.clientY - gesture.startY;
-    const horizontal = Math.abs(deltaX) > Math.abs(deltaY) * 1.15;
-    if (!gesture.dragging && horizontal && deltaX > 58) {
-      gesture = null;
-      void closeSettingsDrawer({ velocity: 0.8 });
-      return;
-    }
-    if (!gesture.dragging && Math.abs(deltaY) > 7 && !horizontal
-      && (gesture.directSurface || deltaY > 0)) {
-      gesture.dragging = true;
-      document.body.classList.add('settings-dragging');
-    }
-    if (!gesture.dragging) return;
-    event.preventDefault();
-    const height = Math.max(1, gesture.drawer.getBoundingClientRect().height);
-    const progress = rubberBand(gesture.startProgress - deltaY / height, 0, 1, 0.16);
-    setSettingsProgress(progress);
-    const now = performance.now();
-    gesture.samples.push({ y: event.clientY, time: now });
-    gesture.samples = gesture.samples.filter((sample) => now - sample.time <= 90);
-  });
-
-  const finish = (event, cancelled = false) => {
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    const current = gesture;
-    gesture = null;
-    releasePointer(current.drawer, event.pointerId);
-    document.body.classList.remove('settings-dragging');
-    if (!current.dragging) return;
-    const finishTime = performance.now();
-    current.samples.push({ y: event.clientY, time: finishTime });
-    current.samples = current.samples.filter((sample) => finishTime - sample.time <= 90);
-    const first = current.samples[0];
-    const last = current.samples[current.samples.length - 1] || first;
-    const velocity = cancelled || last.time === first.time ? 0 : (last.y - first.y) / (last.time - first.time);
-    const progress = readSettingsProgress();
-    const projected = progress - velocity * 0.2;
-    if (!cancelled && (velocity < -0.45 || (velocity <= 0.45 && projected >= 0.52))) {
-      void animateSettingsProgress(1, velocity);
-    } else {
-      void closeSettingsDrawer({ velocity });
-    }
-  };
-  gestureSurface.addEventListener('pointerup', (event) => finish(event));
-  gestureSurface.addEventListener('pointercancel', (event) => finish(event, true));
-}
 
 // 按下反馈的唯一入口：指针与键盘共用一套状态。
 // - 卡片类（活动卡片 / 今日台历 / 主题色块）加 .is-pressed 后由 CSS 做缩放回弹；
@@ -843,91 +713,27 @@ function setupPressFeedback() {
   });
 }
 
-function settingsMotionElements() {
-  return {
-    drawer: settingsRoot?.querySelector('.settings-drawer') || null,
-    scrim: settingsRoot?.querySelector('.settings-scrim') || null
-  };
-}
-
-function readSettingsProgress() {
-  const { drawer } = settingsMotionElements();
-  if (!drawer) return 0;
-  const height = Math.max(1, drawer.getBoundingClientRect().height);
-  const transform = getComputedStyle(drawer).transform;
-  if (!transform || transform === 'none') return ui.settingsOpen ? 1 : 0;
-  try {
-    return clamp(1 - new DOMMatrixReadOnly(transform).m42 / height);
-  } catch {
-    return ui.settingsOpen ? 1 : 0;
-  }
-}
-
-function setSettingsProgress(progress) {
-  const { drawer, scrim } = settingsMotionElements();
-  if (!drawer || !scrim) return;
-  const visualProgress = clamp(progress);
-  const height = Math.max(1, drawer.getBoundingClientRect().height);
-  drawer.style.transform = `translate(-50%, ${(1 - visualProgress) * height}px)`;
-  drawer.style.opacity = String(0.82 + visualProgress * 0.18);
-  scrim.style.opacity = String(visualProgress);
-}
-
-function cancelSettingsAnimations() {
-  const progress = readSettingsProgress();
-  settingsAnimation?.cancel();
-  settingsScrimAnimation?.cancel();
-  settingsAnimation = null;
-  settingsScrimAnimation = null;
-  document.body.classList.remove('settings-closing');
-  setSettingsProgress(progress);
-  return progress;
-}
-
-async function animateSettingsProgress(target, velocity = 0) {
-  const { drawer, scrim } = settingsMotionElements();
-  if (!drawer || !scrim) return false;
-  const start = cancelSettingsAnimations();
-  const distance = Math.abs(target - start);
-  if (distance < 0.005) {
-    setSettingsProgress(target);
-    return true;
-  }
-  const height = Math.max(1, drawer.getBoundingClientRect().height);
-  const duration = clamp(Math.round(170 + distance * 150 - Math.min(Math.abs(velocity), 1.5) * 45), 150, 300);
-  const fromTransform = `translate(-50%, ${(1 - start) * height}px)`;
-  const toTransform = `translate(-50%, ${(1 - target) * height}px)`;
-  settingsAnimation = drawer.animate([
-    { transform: fromTransform, opacity: 0.82 + start * 0.18 },
-    { transform: toTransform, opacity: 0.82 + target * 0.18 }
-  ], { duration, easing: motionEasing(), fill: 'forwards' });
-  settingsScrimAnimation = scrim.animate([
-    { opacity: start },
-    { opacity: target }
-  ], { duration: Math.min(duration, 220), easing: motionEasing('--motion-direct'), fill: 'forwards' });
-  try {
-    await settingsAnimation.finished;
-  } catch {
-    return false;
-  }
-  settingsAnimation = null;
-  settingsScrimAnimation = null;
-  drawer.getAnimations().forEach((animation) => animation.cancel());
-  scrim.getAnimations().forEach((animation) => animation.cancel());
-  setSettingsProgress(target);
-  return true;
+function readSettingsProgress() { return settingsSheet?.progress() || 0; }
+function setSettingsProgress(progress) { settingsSheet?.setProgress(progress); }
+async function animateSettingsProgress(target) {
+  return settingsSheet ? settingsSheet.animateTo(target) : false;
 }
 
 async function prepareSettingsDrawer(initialProgress = 0) {
-  if (ui.settingsOpen || closeActiveDialog) return false;
+  if (ui.settingsOpen || hasOpenOverlay()) return false;
   ui.settingsOpen = true;
   ui.settingsView = 'menu';
-  document.body.classList.remove('settings-open');
+  const sheet = new BottomSheet({ title: '', onClose: () => {
+    if (settingsSheet !== sheet) return;
+    ui.settingsOpen = false; settingsSheet = null; settingsRoot = null;
+  } });
+  settingsSheet = sheet;
+  settingsRoot = sheet.overlay;
+  settingsRoot.id = 'settings-root';
+  sheet.show({ animate: false });
+  sheet.setProgress(initialProgress);
   await renderSettingsDrawer();
-  await nextPaint();
-  document.body.classList.add('settings-open');
-  setSettingsProgress(initialProgress);
-  return true;
+  return !sheet.closed;
 }
 
 async function openSettingsDrawer() {
@@ -935,15 +741,8 @@ async function openSettingsDrawer() {
   await animateSettingsProgress(1);
 }
 
-async function closeSettingsDrawer({ velocity = 0 } = {}) {
-  if (!ui.settingsOpen) return;
-  document.body.classList.add('settings-closing');
-  const completed = await animateSettingsProgress(0, velocity);
-  if (!completed) return;
-  ui.settingsOpen = false;
-  document.body.classList.remove('settings-open');
-  document.body.classList.remove('settings-closing');
-  settingsRoot?.querySelector('.settings-drawer')?.setAttribute('aria-hidden', 'true');
+async function closeSettingsDrawer() {
+  if (settingsSheet) await settingsSheet.close(null);
 }
 
 function setupSettingsGesture() {
@@ -953,7 +752,7 @@ function setupSettingsGesture() {
   let suppressNextClick = false;
 
   const canStart = (target) => {
-    if (ui.settingsOpen || closeActiveDialog) return false;
+    if (ui.settingsOpen || hasOpenOverlay()) return false;
     if (!(target instanceof Element)) return true;
     return !target.closest('.app-dialog, .settings-drawer, .event-card-row--open, .month-calendar');
   };
@@ -1086,6 +885,70 @@ async function bootstrap() {
   await ensureWebApiKey();
   setupSettingsGesture();
   setupAndroidBackButton();
+  await setupNoticeInputs();
+}
+
+function noticeInputsMarkup() {
+  const busy = ui.batchActive || WORKING_STATES.includes(ui.recognitionStatus);
+  return `${ui.clipboardText ? '<div class="clipboard-notice"><span>检测到剪贴板中的通知，要识别吗？</span><button class="button button--primary" id="recognize-clipboard"' + (busy ? ' disabled' : '') + '>识别</button><button class="button button--secondary" id="ignore-clipboard">忽略</button></div>' : ''}
+    ${ui.recentImages.length ? '<section class="recent-screenshots"><h2>最近截图</h2><div class="recent-screenshots__strip">' + ui.recentImages.map((item, index) => '<button type="button" data-recent-index="' + index + '" aria-label="识别最近截图 ' + (index + 1) + '"' + (busy ? ' disabled' : '') + '><img src="' + escapeHtml(item.thumbnail) + '" alt="最近截图 ' + (index + 1) + '"></button>').join('') + '</div></section>' : ''}`;
+}
+
+function renderNoticeInputs() {
+  const root = document.querySelector('#notice-inputs-root');
+  if (!root) return;
+  root.innerHTML = noticeInputsMarkup();
+  root.querySelector('#ignore-clipboard')?.addEventListener('click', async () => {
+    const text = ui.clipboardText;
+    ui.clipboardText = ''; renderNoticeInputs();
+    await ignoreClipboardNotice(text);
+  });
+  root.querySelector('#recognize-clipboard')?.addEventListener('click', async () => {
+    const text = ui.clipboardText;
+    ui.clipboardText = ''; renderNoticeInputs();
+    await ignoreClipboardNotice(text);
+    await startTextRecognition(text);
+  });
+  root.querySelectorAll('[data-recent-index]').forEach((button) => button.onclick = () => {
+    const image = ui.recentImages[Number(button.dataset.recentIndex)];
+    if (image) void startImageBatch([{ uri: image.uri }]);
+  });
+}
+
+async function refreshNoticeInputs(request = false) {
+  if (!isNative() || inputsChecking || (!request && Date.now() - lastInputCheck < 1000)) return;
+  inputsChecking = true;
+  try {
+    const [text, recent] = await Promise.all([
+      clipboardNotice(),
+      recentScreenshots(request && !ui.acceptingShare).catch(() => ({ images: [] }))
+    ]);
+    ui.clipboardText = text; ui.recentImages = recent.images || [];
+    renderNoticeInputs();
+  } finally { inputsChecking = false; lastInputCheck = Date.now(); }
+}
+
+async function setupNoticeInputs() {
+  if (!isNative()) return;
+  await listenForSharedNotices((payload) => {
+    sharedInputQueue = sharedInputQueue.then(async () => {
+    if (sharedNoticeIds.has(payload.id)) return;
+    sharedNoticeIds.add(payload.id);
+    if ((ui.batchActive || WORKING_STATES.includes(ui.recognitionStatus))
+      && !await confirmAction('继续接收分享会停止当前识别，已识别的活动仍会保留。', { title: '识别新的分享内容？', confirmLabel: '继续识别' })) return;
+    cancelRecognition(false);
+    ui.acceptingShare = true;
+    try {
+      if (hasOpenOverlay()) dismissTopOverlay();
+      await transitionRoute('#/add', 'forward', true);
+      if (payload.images?.length) await startImageBatch(payload.images.map((uri) => ({ uri })));
+      else if (payload.text) await startTextRecognition(payload.text);
+    } catch (error) {
+      showToast(error.message || '无法读取分享，请重新分享');
+    } finally { ui.acceptingShare = false; }
+    }).catch(() => { showToast('无法接收分享，请重试'); });
+  });
+  await CapacitorApp.addListener('resume', () => { void refreshNoticeInputs(false); });
 }
 
 function pageClass(extra = '') {
@@ -1127,6 +990,14 @@ async function animatePage(page, target, { duration = 360, easing = motionEasing
 }
 
 async function transitionRoute(hash, direction = 'forward', updateHistory = true) {
+  const editor = document.querySelector('#event-form[data-mode="edit"]');
+  const editorHash = editor ? `#/edit/${editor.dataset.id}` : null;
+  if (editor && hash !== editorHash) {
+    // 浏览器返回已经改变 hash；保留当前表单，询问后再真正切页。
+    if (!updateHistory) history.replaceState(null, '', editorHash);
+    if (!await allowEditorExit(editor)) return;
+    if (!updateHistory) history.replaceState(null, '', hash);
+  }
   const sequence = ++navigationSequence;
   const currentPage = document.querySelector('.page');
   if (direction === 'back' && currentPage) {
@@ -1173,10 +1044,7 @@ async function navigateBackToList() {
 }
 
 async function handleBack() {
-  if (closeActiveDialog) {
-    closeActiveDialog(false);
-    return;
-  }
+  if (dismissTopOverlay()) return;
   if (ui.settingsOpen) {
     closeSettingsDrawer();
     return;
@@ -1560,12 +1428,14 @@ function listCard(event, ended = false, endedIndex = 0) {
   const calendarSuccess = ui.calendarSuccessIds.has(event.id);
   const dateClass = urgent ? 'event-date--urgent' : '';
   const cardAttribute = ui.selectionMode ? `data-select-id="${event.id}"` : `data-event-id="${event.id}"`;
+  const primaryAction = normalizeActions(event.actions)[0];
+  const cardTag = ui.selectionMode ? 'button' : 'div';
   return `<div class="event-card-row ${ui.selectionMode ? 'event-card-row--selection' : ''} ${ended ? 'event-card-row--ended' : ''} ${ui.openSwipeId === event.id ? 'event-card-row--open' : ''}" data-row-id="${event.id}" ${ended ? `style="--ended-index:${endedIndex}"` : ''}>
   ${ui.selectionMode ? '' : `<div class="event-card-actions" aria-label="活动快捷操作">
     <button class="event-swipe-action event-swipe-action--calendar" type="button" data-calendar-id="${event.id}">加入日历</button>
     <button class="event-swipe-action event-swipe-action--delete" type="button" data-delete-id="${event.id}">删除</button>
   </div>`}
-  <button class="event-card ${ended ? 'event-card--ended' : ''} ${isNew ? 'event-card--new' : ''} ${selected ? 'event-card--selected' : ''}" ${cardAttribute}>
+  <${cardTag} class="event-card ${ended ? 'event-card--ended' : ''} ${isNew ? 'event-card--new' : ''} ${selected ? 'event-card--selected' : ''}" ${cardAttribute} ${ui.selectionMode ? '' : 'role="group" tabindex="0" aria-label="' + escapeHtml(event.title || '未命名活动') + '，打开编辑"'}>
     ${ui.selectionMode ? `<span class="selection-check" aria-hidden="true">${selected ? '✓' : ''}</span>` : ''}
     <span class="event-date ${dateClass} ${calendarSuccess ? 'event-date--tear' : ''}" data-date-id="${event.id}" aria-hidden="true">
       <span class="event-date__success">✓</span>
@@ -1586,7 +1456,8 @@ function listCard(event, ended = false, endedIndex = 0) {
         ${deadlineBadge(event)}
       </span>
     </span>
-  </button>
+    ${primaryAction && !ui.selectionMode ? '<span class="event-card__go"><button class="button button--primary go-action" type="button" data-go-id="' + event.id + '">' + escapeHtml(primaryAction.label) + '</button></span>' : ''}
+  </${cardTag}>
   </div>`;
 }
 
@@ -1693,6 +1564,7 @@ function bindSwipeCards() {
 
     card.addEventListener('pointerdown', (event) => {
       if (!event.isPrimary || event.button > 0) return;
+      if (event.target.closest('[data-go-id]')) return;
       const running = card.getAnimations();
       if (running.length) {
         const interruptedOffset = transformTranslateX(card);
@@ -1888,7 +1760,7 @@ async function renderListPage() {
         ${filtered.length ? `<div class="event-list">${filtered.map((event) => listCard(event)).join('')}</div>` : '<div class="empty-state"><p>这天没有活动</p></div>'}` : upcoming.length
         ? activityGroupsMarkup(upcoming, now)
         : `<div class="empty-state empty-state--list">
-            <img src="${emptyCalendarUrl}" alt="空白台历页">
+            <div class="empty-state__illustration" role="img" aria-label="空白台历页">${emptyCalendarSvg}</div>
             <p>还没有活动，点右下角的加号，添加一张通知截图</p>
           </div>`}
     </section>
@@ -1928,11 +1800,23 @@ async function renderListPage() {
     navigateTo('#/add');
   });
   bindSwipeCards();
-  document.querySelectorAll('[data-event-id]').forEach((card) => card.addEventListener('click', async () => {
+  document.querySelectorAll('[data-event-id]').forEach((card) => {
+    card.addEventListener('keydown', (keyEvent) => {
+      if (keyEvent.target === card && ['Enter', ' '].includes(keyEvent.key)) { keyEvent.preventDefault(); card.click(); }
+    });
+    card.addEventListener('click', async (clickEvent) => {
+    if (clickEvent.target.closest('[data-go-id]')) return;
     await wait(90);
     formError = '';
     navigateTo(`#/edit/${card.dataset.eventId}`);
-  }));
+    });
+  });
+  document.querySelectorAll('[data-go-id]').forEach((button) => button.onclick = async (clickEvent) => {
+    clickEvent.stopPropagation();
+    const event = events.find((item) => item.id === button.dataset.goId);
+    const action = normalizeActions(event?.actions)[0];
+    if (action) await runGoAction(action);
+  });
   document.querySelectorAll('[data-select-id]').forEach((card) => card.addEventListener('click', () => {
     const id = card.dataset.selectId;
     if (ui.selectedEventIds.has(id)) ui.selectedEventIds.delete(id);
@@ -2106,7 +1990,8 @@ function recognitionPanel() {
       : STATUS_MESSAGES[ui.statusTextIndex];
 
   return `<section class="recognition-panel">
-    ${ui.recognitionSource === 'image' ? `<input id="replace-image-input" data-image-input class="visually-hidden" type="file" accept="image/*">
+    ${ui.batchActive ? '<p class="batch-progress" role="status">正在识别第 ' + ui.batchIndex + ' / ' + ui.batchTotal + ' 张截图</p>' : ''}
+    ${ui.recognitionSource === 'image' ? `<input id="replace-image-input" data-image-input class="visually-hidden" type="file" accept="image/*" multiple ${ui.batchActive ? 'disabled' : ''}>
       <div class="preview-card">
         <img src="${escapeHtml(ui.previewUrl)}" alt="所选通知截图缩略图">
         <div><strong>${escapeHtml(ui.selectedFile?.name || '所选截图')}</strong><small>请确认截图内容正确</small></div>
@@ -2130,7 +2015,7 @@ function recognitionPanel() {
 
 function selectInputPanel() {
   return `<section class="add-picker add-methods">
-    <input id="add-image-input" data-image-input class="visually-hidden" type="file" accept="image/*">
+    <input id="add-image-input" data-image-input class="visually-hidden" type="file" accept="image/*" multiple>
     <label class="add-picker__button" for="add-image-input">
       <span class="capture-button__icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -2141,12 +2026,11 @@ function selectInputPanel() {
       </span>
       <span><strong>选择通知截图</strong><small>支持海报、群聊和公众号截图</small></span>
     </label>
-    <form class="text-extract-card" id="text-extract-form">
+    <form class="text-extract-card" id="text-extract-form" novalidate>
       <div class="text-extract-card__heading"><span class="text-preview-icon">文</span><div><strong>粘贴通知文字</strong><small>适合群消息、公众号正文或邮件</small></div></div>
       <textarea name="noticeText" maxlength="10000" placeholder="在这里粘贴活动通知内容…" aria-label="活动通知文字"></textarea>
       <button class="button button--extract" id="text-extract-button" type="submit" disabled>从文字提取</button>
     </form>
-    <p>识别时，图片或文字会发送至智谱 AI，App 不会保存或上传到其他地方。</p>
   </section>`;
 }
 
@@ -2157,9 +2041,207 @@ function fieldClass(event, field, flash) {
 
 function editorField(label, name, value, event, type = 'text', flash = false) {
   const uncertain = event.uncertain?.includes(name);
+  if (type === 'date' || type === 'datetime-local') return pickerFieldMarkup(label, name, value, type === 'date', fieldClass(event, name, flash), uncertain);
   return `<label class="${fieldClass(event, name, flash)}"><span>${label}${uncertain ? '<b>请核对</b>' : ''}</span>
     <input name="${name}" type="${type}" value="${escapeHtml(value || '')}">
   </label>`;
+}
+
+function splitPickerValue(value) {
+  if (!value) return { date: '', time: '' };
+  const parsed = String(value).includes('T') ? new Date(value) : parseDateKey(String(value).slice(0, 10));
+  if (!parsed) return { date: '', time: '' };
+  if (Number.isNaN(parsed.getTime())) return { date: '', time: '' };
+  return { date: localDateKey(parsed), time: String(value).includes('T') ? formatClock(value) : '' };
+}
+
+function pickerFieldMarkup(label, name, value, allDay = false, className = 'field', uncertain = false) {
+  const parts = splitPickerValue(value);
+  const dateLabel = label.endsWith('日期') ? label : `${label}日期`;
+  return `<div class="${className} picker-field"><span>${label}${uncertain ? '<b>请核对</b>' : ''}</span>
+    <input type="hidden" name="${name}" value="${escapeHtml(value || '')}">
+    <div class="picker-field__buttons">
+      <button type="button" class="picker-trigger" data-picker="date" data-field="${name}" data-title="${dateLabel}" data-date-only="${allDay}" aria-label="选择${dateLabel}">${parts.date || '选择日期'}</button>
+      ${allDay ? '' : `<button type="button" class="picker-trigger" data-picker="time" data-field="${name}" data-title="${label}时间" aria-label="选择${label}时间">${parts.time || '时间待定'}</button>`}
+      <button type="button" class="picker-clear" data-picker="clear" data-field="${name}" aria-label="清除${label}">清除</button>
+    </div>
+  </div>`;
+}
+
+function optionFieldMarkup(label, name, value, options, className = 'field', uncertain = false) {
+  const selected = options.find((option) => option.value === value);
+  return `<div class="${className} picker-field"><span>${label}${uncertain ? '<b>请核对</b>' : ''}</span>
+    <input type="hidden" name="${name}" value="${escapeHtml(value)}">
+    <button type="button" class="picker-trigger picker-trigger--option" data-picker="option" data-field="${name}" data-title="${label}" data-options="${escapeHtml(JSON.stringify(options))}" aria-label="选择${label}">${escapeHtml(selected?.label || '请选择')}<i aria-hidden="true">›</i></button>
+  </div>`;
+}
+
+function bindPickerFields(root) {
+  const inputFor = (name) => root.querySelector(`input[type="hidden"][name="${CSS.escape(name)}"]`);
+  const update = (name, value) => {
+    const input = inputFor(name);
+    if (!input || !root.isConnected) return;
+    input.value = value || '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const parts = splitPickerValue(value);
+    root.querySelectorAll(`[data-field="${CSS.escape(name)}"]`).forEach((button) => {
+      if (button.dataset.picker === 'date') button.textContent = parts.date || '选择日期';
+      if (button.dataset.picker === 'time') button.textContent = parts.time || '时间待定';
+      if (button.dataset.picker === 'option') {
+        const options = JSON.parse(button.dataset.options);
+        button.innerHTML = `${escapeHtml(options.find((option) => option.value === value)?.label || '请选择')}<i aria-hidden="true">›</i>`;
+      }
+    });
+  };
+  root.querySelectorAll('[data-picker]').forEach((button) => button.addEventListener('click', async () => {
+    const name = button.dataset.field;
+    const input = inputFor(name);
+    if (!input) return;
+    if (button.dataset.picker === 'clear') { update(name, ''); return; }
+    const parts = splitPickerValue(input.value);
+    if (button.dataset.picker === 'option') {
+      const value = await pickOption({ title: button.dataset.title, value: input.value, options: JSON.parse(button.dataset.options), trigger: button });
+      if (value !== null) update(name, value);
+    } else if (button.dataset.picker === 'date') {
+      const value = await pickDate({ title: button.dataset.title, value: parts.date || null, trigger: button });
+      if (value !== null) update(name, button.dataset.dateOnly === 'true' || !parts.time ? value : `${value}T${parts.time}`);
+    } else if (button.dataset.picker === 'time') {
+      let day = parts.date;
+      if (!day) {
+        day = await pickDate({ title: '先选择日期', trigger: button });
+        if (day === null) return;
+      }
+      const value = await pickTime({ title: button.dataset.title, value: parts.time, trigger: button });
+      if (value !== null) update(name, value ? `${day}T${value}` : day);
+    }
+  }));
+  root.querySelector('[data-picker-range]')?.addEventListener('click', async (event) => {
+    const start = splitPickerValue(inputFor('start')?.value);
+    const end = splitPickerValue(inputFor('end')?.value);
+    const range = await pickDate({ title: '活动日期区间', mode: 'range', value: start.date ? { start: start.date, end: end.date || start.date } : null, trigger: event.currentTarget });
+    if (!range) return;
+    const allDay = root.querySelector('[name="allDay"]')?.checked;
+    update('start', start.time && !allDay ? `${range.start}T${start.time}` : range.start);
+    update('end', end.time && !allDay ? `${range.end}T${end.time}` : range.end);
+  });
+}
+
+async function runGoAction(action) {
+  try {
+    if (action.type === 'url') { await openActionUrl(action.value); return; }
+    const dialog = new Dialog({ title: '微信二维码', content: `<p class="ui-modal__message">该二维码需在微信中扫描</p>
+      ${action.value.startsWith('data:image/') ? '<img class="wechat-qr-preview" src="' + escapeHtml(action.value) + '" alt="微信二维码">' : '<p class="settings-note">没有原图裁剪，请在编辑页添加二维码图片。</p>'}
+      <div class="ui-modal__actions"><button class="button button--secondary" type="button" data-qr-close>关闭</button>
+      <button class="button button--primary" type="button" data-qr-save ${action.value.startsWith('data:image/') ? '' : 'disabled'}>保存图片</button></div>` });
+    dialog.panel.querySelector('[data-qr-close]').onclick = () => { void dialog.close(); };
+    dialog.panel.querySelector('[data-qr-save]').onclick = async (clickEvent) => {
+      const button = clickEvent.currentTarget; button.disabled = true;
+      try { await saveQrImage(action.value); showToast(isNative() ? '二维码已保存到相册' : '二维码已下载'); await dialog.close(); }
+      catch (error) { showToast(error.message || '保存失败，请重试'); button.disabled = false; }
+    };
+    dialog.show();
+  } catch (error) { showToast(error.message || '暂时无法打开，请重试'); }
+}
+
+function eventActionsMarkup(event) {
+  const actions = normalizeActions(event.actions);
+  return `<section class="event-actions" id="event-actions"><h2>去办</h2>
+    ${actions.map((action, index) => '<div class="event-action-row"><button class="button button--primary" type="button" data-run-action="' + index + '">' + escapeHtml(action.label) + '</button><span>' + escapeHtml(action.type === 'url' ? action.value : '本地微信二维码') + '</span>' + (action.type === 'url' ? '<button class="icon-button" type="button" data-edit-action="' + index + '" aria-label="修改链接">✎</button>' : '') + '<button class="icon-button" type="button" data-remove-action="' + index + '" aria-label="删除入口">×</button></div>').join('')}
+    <div class="event-actions__tools"><button class="button button--secondary" type="button" data-add-action>添加链接</button>
+    <button class="button button--secondary" type="button" data-add-qr>添加微信二维码</button>
+    <input id="manual-qr-input" class="visually-hidden" type="file" accept="image/*"></div>
+    <small>自动入口来自本张通知，请核对归属。小程序码或未识别的微信二维码，可选择原图后手动圈选。更改后点击保存。</small></section>`;
+}
+
+async function editLinkAction(action = null) {
+  const sheet = new BottomSheet({ title: action ? '修改链接' : '添加链接', content: `<form class="link-action-form" novalidate>
+    <label class="settings-field"><span>按钮文字</span><input name="label" maxlength="12" value="${escapeHtml(action?.label || '去报名')}" placeholder="去报名"></label>
+    <label class="settings-field"><span>网址</span><input name="url" type="url" value="${escapeHtml(action?.value || '')}" placeholder="https://…" autocomplete="off"></label>
+    <p class="link-action-error message--error" role="alert"></p>
+    <div class="ui-modal__actions"><button class="button button--secondary" type="button" data-link-cancel>取消</button><button class="button button--primary" type="submit">保存链接</button></div></form>` });
+  sheet.panel.querySelector('[data-link-cancel]').onclick = () => { void sheet.close(null); };
+  sheet.panel.querySelector('form').onsubmit = (submitEvent) => {
+    submitEvent.preventDefault();
+    const data = new FormData(submitEvent.currentTarget);
+    const value = safeUrl(data.get('url'));
+    const candidate = normalizeActions([{ type: 'url', label: String(data.get('label') || '去报名'), value }])[0];
+    if (!candidate || candidate.type !== 'url') {
+      sheet.panel.querySelector('[role="alert"]').textContent = '请输入可在浏览器打开的 http/https 链接'; return;
+    }
+    void sheet.close(candidate);
+  };
+  sheet.show(); return sheet.result;
+}
+
+async function cropWechatQr(file) {
+  const bitmap = await createImageBitmap(file);
+  const originalUrl = URL.createObjectURL(file);
+  const side = Math.min(bitmap.width, bitmap.height) * .6;
+  let bounds = { x: Math.floor((bitmap.width - side) / 2), y: Math.floor((bitmap.height - side) / 2), width: Math.floor(side), height: Math.floor(side) };
+  const sheet = new BottomSheet({ title: '圈选微信二维码', content: `<p class="settings-note">在图上拖动圈选二维码，保留四周空白。小程序码不解码，只保存裁剪图片。</p>
+    <div class="qr-crop-stage"><img src="${escapeHtml(originalUrl)}" alt="待裁剪的通知原图"><div class="qr-crop-selection"></div></div>
+    <div class="ui-modal__actions"><button class="button button--secondary" type="button" data-crop-cancel>取消</button><button class="button button--primary" type="button" data-crop-confirm>添加二维码</button></div>` });
+  const stage = sheet.panel.querySelector('.qr-crop-stage'), image = stage.querySelector('img'), selection = stage.querySelector('.qr-crop-selection');
+  const redraw = () => {
+    Object.assign(selection.style, { left: bounds.x / bitmap.width * 100 + '%', top: bounds.y / bitmap.height * 100 + '%', width: bounds.width / bitmap.width * 100 + '%', height: bounds.height / bitmap.height * 100 + '%' });
+  };
+  const point = (event) => {
+    const rect = image.getBoundingClientRect();
+    return { x: clamp((event.clientX - rect.left) / rect.width, 0, 1) * bitmap.width,
+      y: clamp((event.clientY - rect.top) / rect.height, 0, 1) * bitmap.height };
+  };
+  let start = null;
+  stage.onpointerdown = (event) => {
+    if (!event.isPrimary || event.button > 0) return; start = point(event); stage.setPointerCapture(event.pointerId);
+  };
+  stage.onpointermove = (event) => {
+    if (!start) return;
+    const end = point(event);
+    bounds = { x: Math.floor(Math.min(start.x, end.x)), y: Math.floor(Math.min(start.y, end.y)),
+      width: Math.max(1, Math.floor(Math.abs(end.x - start.x))), height: Math.max(1, Math.floor(Math.abs(end.y - start.y))) };
+    redraw();
+  };
+  stage.onpointerup = stage.onpointercancel = () => { start = null; };
+  sheet.panel.querySelector('[data-crop-cancel]').onclick = () => { void sheet.close(null); };
+  sheet.panel.querySelector('[data-crop-confirm]').onclick = () => {
+    if (bounds.width < 16 || bounds.height < 16) { showToast('请圈选完整二维码'); return; }
+    void sheet.close({ type: 'wechat_qr', label: '微信二维码', value: cropImage(bitmap, bounds) });
+  };
+  redraw(); sheet.show();
+  try { return await sheet.result; } finally { bitmap.close(); URL.revokeObjectURL(originalUrl); }
+}
+
+function bindEventActions(form, event, mode) {
+  form.actionDraft = normalizeActions(event.actions);
+  const bind = () => {
+    const root = form.querySelector('#event-actions');
+    const update = (actions) => {
+      form.actionDraft = normalizeActions(actions);
+      root.outerHTML = eventActionsMarkup({ actions: form.actionDraft });
+      bind(); form.querySelector('[data-add-action]')?.focus({ preventScroll: true });
+    };
+    root.querySelectorAll('[data-run-action]').forEach((button) => button.onclick = () => { void runGoAction(form.actionDraft[Number(button.dataset.runAction)]); });
+    root.querySelector('[data-add-action]').onclick = async () => {
+      const action = await editLinkAction();
+      if (action && form.isConnected) update(mergeActions(form.actionDraft, [action]));
+    };
+    root.querySelectorAll('[data-edit-action]').forEach((button) => button.onclick = async () => {
+      const index = Number(button.dataset.editAction), action = await editLinkAction(form.actionDraft[index]);
+      if (action && form.isConnected) update(form.actionDraft.map((item, i) => i === index ? action : item));
+    });
+    root.querySelectorAll('[data-remove-action]').forEach((button) => button.onclick = async () => {
+      const index = Number(button.dataset.removeAction);
+      if (await confirmAction('该入口将从活动中移除，其他信息不会改变。', { title: '删除这个入口？', confirmLabel: '删除', danger: true }) && form.isConnected)
+        update(form.actionDraft.filter((_, i) => i !== index));
+    });
+    root.querySelector('#manual-qr-input').onchange = async (inputEvent) => {
+      const file = inputEvent.target.files?.[0]; if (!file) return;
+      try { const action = await cropWechatQr(file); if (action && form.isConnected) update(mergeActions(form.actionDraft, [action])); }
+      catch { showToast('无法读取图片，请重新选择'); }
+    };
+    root.querySelector('[data-add-qr]').onclick = () => root.querySelector('#manual-qr-input').click();
+  };
+  bind();
 }
 
 function eventFormMarkup(event, options) {
@@ -2171,25 +2253,21 @@ function eventFormMarkup(event, options) {
 
   return `<section class="activity-editor ${isAdd ? 'activity-editor--recognized' : ''}">
     ${isAdd ? `<div class="recognized-heading"><span>识别到 ${total} 个活动</span><b>${index + 1} / ${total}</b></div>` : ''}
-    <form id="event-form" class="editor-form" data-mode="${mode}" data-id="${event.id}">
+    <form id="event-form" class="editor-form" data-mode="${mode}" data-id="${event.id}" novalidate>
       ${editorField('活动名称', 'title', event.title, event, 'text', flash)}
-      <label class="${fieldClass(event, 'category', flash)}"><span>活动类型${event.uncertain?.includes('category') ? '<b>请核对</b>' : ''}</span><select name="category">
-        ${EVENT_CATEGORIES.map((category) => `<option value="${category}" ${categoryOf(event) === category ? 'selected' : ''}>${category}</option>`).join('')}
-      </select></label>
+      ${eventActionsMarkup(event)}
+      ${optionFieldMarkup('活动类型', 'category', categoryOf(event), EVENT_CATEGORIES.map((category) => ({ value: category, label: category })), fieldClass(event, 'category', flash), event.uncertain?.includes('category'))}
       <label class="toggle-row"><span><strong>全天活动</strong><small>通知只给出日期时开启</small></span><input name="allDay" type="checkbox" ${event.allDay ? 'checked' : ''}></label>
       <div class="time-grid">
         ${editorField('开始', 'start', inputTime(event.start), event, timeType, flash)}
         ${editorField('结束', 'end', inputTime(event.end), event, timeType, flash)}
       </div>
+      <button class="button button--secondary date-range-trigger" type="button" data-picker-range>选择日期区间</button>
       ${editorField('地点', 'location', event.location, event, 'text', flash)}
       ${editorField('报名截止', 'deadline', event.deadline, event, 'datetime-local', flash)}
       <label class="${fieldClass(event, 'signup', flash)}"><span>报名方式${event.uncertain?.includes('signup') ? '<b>请核对</b>' : ''}</span><textarea name="signup" rows="3">${escapeHtml(event.signup || '')}</textarea></label>
       <label class="${fieldClass(event, 'description', flash)}"><span>日历描述${event.uncertain?.includes('description') ? '<b>请核对</b>' : ''}</span><textarea name="description" rows="6">${escapeHtml(event.description || '')}</textarea></label>
-      <label class="field"><span>状态</span><select name="status">
-        <option value="interested" ${event.status === 'interested' ? 'selected' : ''}>感兴趣</option>
-        <option value="registered" ${event.status === 'registered' ? 'selected' : ''}>已报名</option>
-        <option value="skipped" ${event.status === 'skipped' ? 'selected' : ''}>不参加</option>
-      </select></label>
+      ${optionFieldMarkup('状态', 'status', event.status || 'interested', ['interested', 'registered', 'skipped'].map((status) => ({ value: status, label: statusLabel(status) })))}
       ${formError ? `<div class="message message--error">${escapeHtml(formError)}</div>` : ''}
       <div class="editor-actions ${isAdd ? 'editor-actions--add' : ''}">
         ${isAdd
@@ -2213,10 +2291,8 @@ function getFormPatch(form, original) {
   if (allDay) {
     if (start) start = start.slice(0, 10) + 'T00:00';
     if (end) end = end.slice(0, 10) + 'T00:00';
-  } else {
-    if (start && !start.includes('T')) start += original.start?.startsWith(start + 'T') ? original.start.slice(10) : 'T00:00';
-    if (end && !end.includes('T')) end += original.end?.startsWith(end + 'T') ? original.end.slice(10) : 'T00:00';
   }
+  // 非全天模式的日期值可不含时间；选择“时间待定”后不恢复旧时间或默认填午夜。
   return {
     title: String(data.get('title') || '').trim(),
     start,
@@ -2228,7 +2304,8 @@ function getFormPatch(form, original) {
     description: valueOrNull('description'),
     category: EVENT_CATEGORIES.includes(data.get('category')) ? String(data.get('category')) : '其他',
     status: String(data.get('status') || original.status || 'interested'),
-    uncertain: (original.uncertain || []).filter((field) => !touched.has(field))
+    uncertain: (original.uncertain || []).filter((field) => !touched.has(field)),
+    actions: normalizeActions(form.actionDraft ?? original.actions)
   };
 }
 
@@ -2236,6 +2313,51 @@ async function persistFormEvent(mode, event, patch) {
   if (mode === 'add') await updatePendingEvent(event.id, patch);
   else await updateEvent(event.id, patch);
   await refresh();
+}
+
+function editorHasChanges(form) {
+  return Boolean(form?.savedPatch && JSON.stringify(getFormPatch(form, form.boundEvent)) !== form.savedPatch);
+}
+
+async function allowEditorExit(form) {
+  if (!editorHasChanges(form)) return true;
+  if (ui.actionBusy) return false;
+  if (editorExitPrompt) return editorExitPrompt;
+  const dialog = new Dialog({ title: '保存修改？', content: `<p class="ui-modal__message">活动信息已修改，尚未保存。</p>
+    <p class="link-action-error" role="alert"></p>
+    <div class="ui-modal__actions editor-exit-actions"><button class="button button--secondary" type="button" data-stay>继续编辑</button>
+    <button class="button button--secondary" type="button" data-discard>不保存</button>
+    <button class="button button--primary" type="button" data-save>保存</button></div>` });
+  dialog.panel.querySelector('[data-stay]').onclick = () => { void dialog.close(null); };
+  dialog.panel.querySelector('[data-discard]').onclick = () => { void dialog.close('discard'); };
+  dialog.panel.querySelector('[data-save]').onclick = async () => {
+    const patch = getFormPatch(form, form.boundEvent);
+    const error = dialog.panel.querySelector('[role="alert"]');
+    if (!patch.title) { error.textContent = '请填写活动名称后保存，或选择继续编辑。'; return; }
+    const button = dialog.panel.querySelector('[data-save]');
+    const buttons = dialog.panel.querySelectorAll('button');
+    buttons.forEach((control) => { control.disabled = true; });
+    setActionBusy('saving', button, '保存中…');
+    try {
+      await updateEvent(form.dataset.id, patch);
+      await refresh();
+      form.savedPatch = JSON.stringify(patch);
+      showToast('已保存');
+      await dialog.close('save');
+    } catch {
+      error.textContent = '保存失败，请重试，修改仍保留在当前页面。';
+    } finally {
+      clearActionBusy(button, '保存');
+      buttons.forEach((control) => { control.disabled = false; });
+    }
+  };
+  dialog.show();
+  editorExitPrompt = dialog.result.then((choice) => choice === 'save' || choice === 'discard');
+  try { return await editorExitPrompt; } finally { editorExitPrompt = null; }
+}
+
+async function renderEditorDraft(event, form) {
+  await renderEditPage(event.id, { draft: getFormPatch(form, event), baseline: form.savedPatch });
 }
 
 async function confirmDraft(event, patch) {
@@ -2252,14 +2374,19 @@ function bindEventForm(event, options) {
   const form = document.querySelector('#event-form');
   if (!form) return;
   seenUncertainIds.add(event.id);
+  bindPickerFields(form);
+  bindEventActions(form, event, mode);
+  form.boundEvent = event;
+  form.savedPatch = options.baseline || JSON.stringify(getFormPatch(form, event));
   form.querySelectorAll('input, textarea, select').forEach((control) => control.addEventListener('input', () => {
     control.dataset.touched = 'true';
   }));
 
   form.elements.allDay.addEventListener('change', async () => {
-    await persistFormEvent(mode, event, getFormPatch(form, event));
-    if (mode === 'add') await renderAddPage();
-    else await renderEditPage(event.id);
+    if (mode === 'add') {
+      await persistFormEvent(mode, event, getFormPatch(form, event));
+      await renderAddPage();
+    } else await renderEditorDraft(event, form);
   });
 
   form.addEventListener('submit', async (submitEvent) => {
@@ -2270,7 +2397,7 @@ function bindEventForm(event, options) {
     if (!patch.title) {
       formError = '请填写活动名称';
       if (mode === 'add') await renderAddPage();
-      else await renderEditPage(event.id);
+      else await renderEditorDraft(event, form);
       return;
     }
 
@@ -2293,6 +2420,7 @@ function bindEventForm(event, options) {
       } else {
         await updateEvent(event.id, patch);
         await refresh();
+        form.savedPatch = JSON.stringify(patch);
         ui.actionBusy = null;
         formError = '';
         showToast('已保存');
@@ -2302,7 +2430,7 @@ function bindEventForm(event, options) {
       formError = '保存失败，请重试';
       clearActionBusy(button, '保存');
       if (mode === 'add') await renderAddPage();
-      else await renderEditPage(event.id);
+      else await renderEditorDraft(event, form);
     }
   });
 
@@ -2334,12 +2462,13 @@ function bindEventForm(event, options) {
       const patch = getFormPatch(form, event);
       if (!patch.title || !patch.start) {
         formError = '加入日历前请补全活动名称和开始时间';
-        await renderEditPage(event.id);
+        await renderEditorDraft(event, form);
         return;
       }
       setActionBusy('calendar', button, isNative() ? '正在打开…' : '正在生成…');
       try {
         await updateEvent(event.id, patch);
+        form.savedPatch = JSON.stringify(patch);
         const saved = { ...event, ...patch };
         await openSavedEventInCalendar(saved);
         await refresh();
@@ -2351,13 +2480,14 @@ function bindEventForm(event, options) {
       } catch (error) {
         ui.actionBusy = null;
         formError = error.message || '无法打开系统日历';
-        await renderEditPage(event.id);
+        await renderEditorDraft(event, form);
       }
     });
 
     document.querySelector('#delete-button').addEventListener('click', async () => {
       if (ui.actionBusy || !await confirmAction('这个活动将从活动列表中移除，此操作无法撤销。', { title: '删除这个活动？', confirmLabel: '删除', danger: true })) return;
       setActionBusy('deleting', document.querySelector('#delete-button'), '删除中…');
+      form.savedPatch = JSON.stringify(getFormPatch(form, event));
       await navigateBackToList();
       await nextPaint();
       await animateListDeletion([event.id]);
@@ -2371,7 +2501,7 @@ function bindEventForm(event, options) {
 
 async function renderAddPage() {
   if (parseRoute().name !== 'add') return;
-  const draft = pendingEvents.find((event) => event.id === ui.activeDraftId)
+  const draft = ui.batchActive ? null : pendingEvents.find((event) => event.id === ui.activeDraftId)
     || pendingEvents.find((event) => ui.resultIds.includes(event.id))
     || (ui.recognitionStatus === 'idle' ? pendingEvents[0] : null);
   if (draft) ui.activeDraftId = draft.id;
@@ -2386,11 +2516,14 @@ async function renderAddPage() {
       <h1>添加活动</h1>
     </header>
     <div class="secondary-content">
+      <div id="notice-inputs-root"></div>
+      ${!ui.batchActive && ui.batchFailed.length ? '<div class="batch-failures"><span>' + ui.batchFailed.length + ' 张截图未完成识别，成功结果已保留</span><button class="button button--secondary" id="retry-batch">重试未完成截图</button></div>' : ''}
       ${draft
         ? eventFormMarkup(draft, { mode: 'add', index: draftIndex, total: relatedDrafts.length || 1 })
         : ui.recognitionStatus === 'idle'
           ? selectInputPanel()
           : recognitionPanel()}
+      <p class="input-privacy">识别时，图片或文字会发送至智谱 AI。读取剪贴板和截图仅在你点击识别后发送至智谱 AI。</p>
     </div>
   </main>
   ${toastMarkup()}`;
@@ -2400,16 +2533,20 @@ async function renderAddPage() {
   document.querySelector('#back-button').addEventListener('click', handleBack);
   bindImageInputs();
   bindTextInput();
+  renderNoticeInputs();
+  document.querySelector('#retry-batch')?.addEventListener('click', () => { void startImageBatch(ui.batchFailed.map((item) => item.source), true); });
   document.querySelector('#cancel-recognition')?.addEventListener('click', cancelRecognition);
   document.querySelector('#retry-recognition')?.addEventListener('click', () => {
     if (ui.recognitionSource === 'text') void startTextRecognition(ui.selectedText);
-    else void startRecognition(ui.selectedFile, false);
+    else if (ui.batchFailed.length) void startImageBatch(ui.batchFailed.map((item) => item.source), true);
+    else void startImageBatch([{ file: ui.selectedFile }]);
   });
   if (draft) bindEventForm(draft, { mode: 'add' });
 }
 
-async function renderEditPage(id) {
-  const event = events.find((item) => item.id === id);
+async function renderEditPage(id, { draft = null, baseline = null } = {}) {
+  const saved = events.find((item) => item.id === id);
+  const event = saved && { ...saved, ...(draft || {}) };
   if (!event) {
     navigateTo('#/list', 'page--fade-in');
     return;
@@ -2423,7 +2560,7 @@ async function renderEditPage(id) {
   </main>
   ${toastMarkup()}`;
   document.querySelector('#back-button').addEventListener('click', handleBack);
-  bindEventForm(event, { mode: 'edit' });
+  bindEventForm(event, { mode: 'edit', baseline });
 }
 
 function bindImageInputs() {
@@ -2473,9 +2610,41 @@ function bindTextInput() {
 }
 
 async function handleImage(inputEvent) {
-  const file = inputEvent.target.files?.[0];
-  if (!file) return;
-  await startRecognition(file, true);
+  const files = [...(inputEvent.target.files || [])];
+  if (!files.length) return;
+  await startImageBatch(files.map((file) => ({ file })));
+}
+
+async function startImageBatch(sources, append = false) {
+  if (!sources.length || ui.batchActive) return;
+  const batchId = ++batchRunId;
+  ui.batchActive = true; ui.batchTotal = sources.length; ui.batchIndex = 0; ui.batchFailed = [];
+  ui.batchSources = sources;
+  if (!append) ui.resultIds = [];
+  ui.activeDraftId = null;
+  for (let index = 0; index < sources.length; index++) {
+    if (batchId !== batchRunId) return;
+    ui.batchIndex = index + 1;
+    const source = sources[index];
+    try {
+      ui.startedAt = Date.now();
+      ui.recognitionSource = 'image';
+      setRecognitionStatus('compressing', { error: '', slow: false });
+      const file = source.file || await nativeImageFile(source.uri, index);
+      if (batchId !== batchRunId) return;
+      await startRecognition(file, true);
+      if (batchId !== batchRunId) return;
+      if (ui.recognitionStatus === 'error') ui.batchFailed.push({ source, error: ui.error });
+    } catch (error) {
+      ui.batchFailed.push({ source, error: error.message || '图片无法读取' });
+    }
+  }
+  if (batchId !== batchRunId) return;
+  ui.batchActive = false;
+  ui.batchSources = [];
+  ui.activeDraftId = ui.resultIds[0] || null;
+  if (ui.resultIds.length) setRecognitionStatus('done', { slow: false });
+  else setRecognitionStatus('error', { error: ui.batchFailed[0]?.error || '未识别到活动', slow: false });
 }
 
 async function startRecognition(file, replacePreview) {
@@ -2496,15 +2665,17 @@ async function startRecognition(file, replacePreview) {
     error: '',
     slow: false,
     statusTextIndex: 0,
-    resultIds: []
+    resultIds: ui.batchActive ? ui.resultIds : []
   });
 
   try {
-    const imageDataUrl = await compressImage(file);
+    const scan = await scanImageQr(file);
+    if (runId !== recognitionRunId) return;
+    const imageDataUrl = await compressImage(scan.maskedFile);
     if (runId !== recognitionRunId) return;
     ui.compressedImage = imageDataUrl;
     setRecognitionStatus('uploading', { slow: false });
-    const extracted = await extractEvents(imageDataUrl, new Date());
+    const extracted = mergeQrActions(await extractEvents(imageDataUrl, new Date()), scan.hits);
     if (runId !== recognitionRunId) return;
 
     await storeExtractionResults(extracted, runId);
@@ -2520,6 +2691,7 @@ async function startRecognition(file, replacePreview) {
 async function startTextRecognition(text) {
   const content = String(text || '').trim();
   if (!content) return;
+  ui.batchFailed = [];
   if (WORKING_STATES.includes(ui.recognitionStatus)) {
     window.dispatchEvent(new Event('campus:cancel-extraction'));
   }
@@ -2563,6 +2735,11 @@ async function storeExtractionResults(extracted, runId) {
   }));
   await addPendingEvents(drafts);
   await refresh();
+  if (runId !== recognitionRunId) return;
+  if (ui.batchActive) {
+    ui.resultIds.push(...drafts.map((event) => event.id));
+    return;
+  }
   document.querySelector('.skeleton-card')?.classList.add('skeleton-card--leaving');
   await wait(180);
   if (runId !== recognitionRunId) return;
@@ -2573,10 +2750,17 @@ async function storeExtractionResults(extracted, runId) {
   });
 }
 
-function cancelRecognition() {
+function cancelRecognition(showError = true) {
+  if (ui.batchActive) {
+    ui.batchFailed.push(...ui.batchSources.slice(Math.max(0, ui.batchIndex - 1))
+      .map((source) => ({ source, error: '已取消识别' })));
+  }
+  ui.batchSources = [];
+  batchRunId += 1;
+  ui.batchActive = false;
   recognitionRunId += 1;
   window.dispatchEvent(new Event('campus:cancel-extraction'));
-  setRecognitionStatus('error', { error: '已取消识别', slow: false });
+  if (showError) setRecognitionStatus('error', { error: '已取消识别', slow: false });
 }
 
 window.addEventListener('campus:extract-stage', (event) => {
@@ -2592,9 +2776,14 @@ async function renderRoute() {
     listScrollHandler = null;
   }
   const route = parseRoute();
-  if (route.name === 'add') await renderAddPage();
+  if (route.name === 'add') {
+    await renderAddPage();
+    if (!addInputPageActive) void refreshNoticeInputs(true);
+    addInputPageActive = true;
+  }
   else if (route.name === 'edit') await renderEditPage(route.id);
   else await renderListPage();
+  if (route.name !== 'add') addInputPageActive = false;
 }
 
 window.addEventListener('hashchange', () => {

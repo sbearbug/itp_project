@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">校园活动助手</string>
-    <string name="title_activity_main">校园活动助手</string>
-    <string name="package_name">com.itp.campusdemo</string>
-    <string name="custom_url_scheme">com.itp.campusdemo</string>
+    <string name="app_name">落笺</string>
+    <string name="title_activity_main">落笺</string>
+    <string name="package_name">com.itp.notice</string>
+    <string name="custom_url_scheme">com.itp.notice</string>
 </resources>

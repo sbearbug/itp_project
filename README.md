@@ -1,17 +1,30 @@
-# 校园活动助手 Demo
+# 落笺 Demo
 
 从校园通知截图或粘贴的通知文字中提取活动信息，人工确认后加入日历。
 
-Android APK 是 Demo 的主要产物，本地网页 ZIP 只用于没有 Android
-设备的组员辅助体验。同步构建两份产物：
+Android 正式安装包是主要产物，本地网页 ZIP 仅在需要时单独打包。
+当前版本为 **2.0.0**（versionCode 2），应用 ID 为 `com.itp.notice`。
+正式构建：
 
 ```bash
-npm run release:demo
+npm run build
+npx cap sync android
+cd android
+./gradlew assembleRelease
 ```
 
-生成项目根目录的 `campus-demo-android.apk`和 `campus-demo-local.zip`。
-当前 Android 版本为 1.3（`versionCode 4`），正式测试包输出为
-`schedule-official-v1.apk`，避免下载器或文件缓存混淆新旧包。
+Gradle 输出 `android/app/build/outputs/apk/release/app-release.apk`，本次交付包为
+`release/luojian-v2.0.0.apk`。设置菜单中的“关于落笺”显示相同版本。
+
+正式签名使用本地 `android/release.keystore`（别名 luojian）及
+`android/keystore.properties`。两者已排除 Git，请一起加密备份，切勿提交或公开；
+密码保存在 properties 中，不在文档中重复记录。后续正式更新必须沿用同一密钥并递增
+versionCode，不能重新生成签名。配置或密钥缺失时构建明确失败，不使用调试签名兜底。
+Release 保持 `minifyEnabled false`。
+
+新应用 ID 与旧 Demo 不同，可以并存；旧活动、主题、权限不会自动迁移。
+本次仅生成正式 APK，没有重新打包网页 ZIP。旧 `release:demo` 为演示构建流程，
+不能作为正式签名发布流程使用。
 
 ## 本地预览
 

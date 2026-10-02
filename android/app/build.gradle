@@ -1,14 +1,29 @@
 apply plugin: 'com.android.application'
 
+def signingPropertiesFile = rootProject.file('keystore.properties')
+if (!signingPropertiesFile.isFile()) {
+    throw new GradleException('正式签名配置缺失：请恢复 android/keystore.properties，不允许回退为调试签名。')
+}
+def signingProperties = new Properties()
+signingPropertiesFile.withInputStream { signingProperties.load(it) }
+['storeFile', 'storePassword', 'keyAlias', 'keyPassword'].each { name ->
+    if (!signingProperties.getProperty(name)?.trim()) {
+        throw new GradleException("正式签名配置缺少字段：${name}")
+    }
+}
+if (!file(signingProperties.getProperty('storeFile')).isFile()) {
+    throw new GradleException('正式签名密钥库不存在：请恢复 android/release.keystore。')
+}
+
 android {
-    namespace = "com.itp.campusdemo"
+    namespace = "com.itp.notice"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.itp.campusdemo"
+        applicationId "com.itp.notice"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 18
-        versionName "1.14"
+        versionCode 2
+        versionName "2.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +31,17 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            storeFile file(signingProperties.getProperty('storeFile'))
+            storePassword signingProperties.getProperty('storePassword')
+            keyAlias signingProperties.getProperty('keyAlias')
+            keyPassword signingProperties.getProperty('keyPassword')
+        }
+    }
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

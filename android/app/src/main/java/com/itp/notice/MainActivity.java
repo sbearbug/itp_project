@@ -1,4 +1,4 @@
-package com.itp.campusdemo;
+package com.itp.notice;
 
 import android.os.Bundle;
 import android.content.SharedPreferences;
@@ -19,6 +19,7 @@ public class MainActivity extends BridgeActivity {
         }
         registerPlugin(CalendarIntentPlugin.class);
         registerPlugin(SystemBarsPlugin.class);
+        registerPlugin(NoticeInputPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -33,9 +33,10 @@ export class CalendarGrid {
       <div class="calendar-grid__week" aria-hidden="true">${['一', '二', '三', '四', '五', '六', '日'].map((day) => `<span>${day}</span>`).join('')}</div>
       <div class="calendar-grid__days">${calendarDays(this.month).map((date) => {
         const key = dateKey(date);
-        const selected = !!range && key >= range.start && key <= range.end;
+        const inRange = !!range && key >= range.start && key <= range.end;
+        const selected = inRange && (key === range.start || key === range.end);
         const mark = this.marks[key];
-        return `<button type="button" class="calendar-day ${date.getMonth() !== this.month.getMonth() ? 'calendar-day--outside' : ''} ${key === today ? 'calendar-day--today' : ''} ${selected ? 'calendar-day--selected' : ''}" data-calendar-date="${key}" aria-pressed="${selected}" ${key === today ? 'aria-current="date"' : ''} aria-label="${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日${mark ? '，有活动' : ''}"><span>${date.getDate()}</span><i class="calendar-day__dot ${mark === 'urgent' ? 'calendar-day__dot--urgent' : ''}" ${mark ? '' : 'hidden'}></i></button>`;
+        return `<button type="button" class="calendar-day ${date.getMonth() !== this.month.getMonth() ? 'calendar-day--outside' : ''} ${key === today ? 'calendar-day--today' : ''} ${selected ? 'calendar-day--selected' : ''} ${inRange && typeof this.selected !== 'string' ? 'calendar-day--in-range' : ''} ${key === range?.start ? 'calendar-day--range-start' : ''} ${key === range?.end ? 'calendar-day--range-end' : ''}" data-calendar-date="${key}" aria-pressed="${inRange}" ${key === today ? 'aria-current="date"' : ''} aria-label="${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日${mark ? '，有活动' : ''}"><span>${date.getDate()}</span><i class="calendar-day__dot ${mark === 'urgent' ? 'calendar-day__dot--urgent' : ''}" ${mark ? '' : 'hidden'}></i></button>`;
       }).join('')}</div>
     </div>`;
   }

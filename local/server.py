@@ -212,7 +212,7 @@ def main():
         return 1
 
     url = "http://127.0.0.1:{}/".format(port)
-    print("\n校园活动助手已启动：{}".format(url))
+    print("\n落笺已启动：{}".format(url))
     if not CampusHandler.api_key:
         print("尚未配置 API Key，请在浏览器弹窗中填写。")
     print("浏览器将自动打开。使用完毕后，关闭此窗口即可退出。\n")

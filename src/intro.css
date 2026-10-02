@@ -10,7 +10,7 @@
   z-index: 9999;
   display: grid;
   place-items: center;
-  background: var(--intro-bg, #F4F4F6);
+  background: var(--intro-bg, var(--bg));
 }
 
 .intro-icon {

@@ -15,7 +15,7 @@ const LEGACY_LIGHT_THEME_CACHE_KEY = 'campus-theme-light';
 const LEGACY_DARK_THEME_CACHE_KEY = 'campus-theme-dark';
 
 export const APPEARANCE_MODES = Object.freeze(['system', 'light', 'dark']);
-export const THEMES = Object.freeze(['mist', 'ice', 'moss', 'sunny']);
+export const THEMES = Object.freeze(['mist', 'ice', 'moss', 'sunny', 'paper', 'dusk']);
 
 export const MODE_LABELS = Object.freeze({
   system: '跟随系统',
@@ -27,7 +27,9 @@ export const THEME_LABELS = Object.freeze({
   mist: '烟雨',
   ice: '坚冰',
   moss: '苔绿',
-  sunny: '暖阳'
+  sunny: '暖阳',
+  paper: '素笺',
+  dusk: '暮霞'
 });
 
 const SystemBars = globalThis.__campusSystemBars

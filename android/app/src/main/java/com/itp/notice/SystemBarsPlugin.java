@@ -1,4 +1,4 @@
-package com.itp.campusdemo;
+package com.itp.notice;
 
 import android.graphics.Color;
 import android.view.Window;

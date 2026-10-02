@@ -23,7 +23,7 @@
 ```bash
 npm create vite@latest campus-demo -- --template vanilla
 cd campus-demo && npm i @capacitor/core @capacitor/cli @capacitor/android @capacitor/preferences
-npx cap init "校园活动助手" com.itp.campusdemo --web-dir dist
+npx cap init "落笺" com.itp.notice --web-dir dist
 npx cap add android
 # 之后每次改完前端：npm run build && npx cap sync android
 ```
@@ -44,7 +44,7 @@ campus-demo/
 │   └── style.css
 ├── local/                 # 标准库本地服务器、配置和双击启动文件
 ├── scripts/package-local.mjs # 构建并生成本地网页版 ZIP
-├── android/app/src/main/java/com/itp/campusdemo/
+├── android/app/src/main/java/com/itp/notice/
 │   ├── MainActivity.java          # 注册插件
 │   ├── CalendarIntentPlugin.java  # 写日历原生插件
 │   └── SystemBarsPlugin.java      # 同步导航栏与冷启动主题
@@ -69,6 +69,7 @@ campus-demo/
   "signup": "报名方式/链接/二维码说明 或 null",
   "description": "按模板生成的日历描述 或 null",
   "category": "可选；讲座 | 竞赛 | 志愿 | 社团 | 招聘 | 其他",
+  "actions": [{ "type": "url", "label": "去报名", "value": "https://example.com/signup" }],
   "uncertain": ["模型不确定的字段名，如 start、location"],
   "status": "interested | registered | skipped",
   "createdAt": "ISO 时间字符串"
@@ -78,6 +79,10 @@ campus-demo/
 时间统一为本地时间 `YYYY-MM-DDTHH:mm`，不带时区。
 `category` 是新增的可选展示字段；读取旧数据或收到未知值时统一按“其他”处理，
 因此不会破坏已有 Event 或模块接口。
+`actions` 是可选的去办入口数组，缺失时按空数组处理；每项仅含
+`type: url | wechat_qr`、`label`、`value`。网址动作的 value 为 http/https 链接；
+微信二维码动作优先保存本地裁剪图的 PNG/JPEG data URL，只有文字来源时也可保存
+微信专属链接（无原图则无法保存图片，需用户补充）。其余已有字段和模块接口不变。
 
 识别结果先保存到独立的 `pending_events` 待确认队列。用户确认后才进入正式
 `events` 列表；中途返回时保留待确认项，并在首页标黄。
@@ -220,7 +225,7 @@ Animations API 驱动：若用户在进入动画尚未完成时返回，会先�
   `--text`、`--text-2`、`--accent`、`--on-accent`、`--btn`、`--on-btn`、`--date-bg`、
   `--date-text`、`--today-bg`、`--today-text`、`--highlight`、`--on-highlight`、
   `--urgent-bg` 和 `--urgent-text` 语义变量；具体色值只出现在主题令牌定义中。
-- 主题提供烟雨、坚冰、苔绿、暖阳四套，每套同时包含浅色和深色版本；模式提供
+- 主题依次提供烟雨、坚冰、苔绿、暖阳、素笺、暮霞六套，每套同时包含浅色和深色版本；模式提供
   “跟随系统、浅色、深色”。当前配色始终由“所选主题 × 当前模式”共同确定，新用户
   默认跟随系统并选择烟雨。系统外观变化或用户切换模式时，仍使用同一主题的对应版本。
 - `theme.js` 使用 Preferences 持久化模式和单一主题选择，同时镜像到 `localStorage`。
@@ -308,8 +313,8 @@ Animations API 驱动：若用户在进入动画尚未完成时返回，会先�
 - 管理模式使用底部操作条，进入时从下向上出现，点击完成、取消或按返回键时先向下
   滑出再退出管理状态。已结束分组不使用
   原生 `<details>`，展开时容器像窗帘一样向下展开，活动卡片以 55ms 间隔依次下落排列。
-- 删除、放弃、批量日历等确认操作统一使用 App 内 Material 3 弹窗；点击遮罩、取消
-  按钮、Esc 或 Android 返回键均可关闭。
+- 删除、放弃、批量日历等确认操作统一使用 App 内 Dialog；点击遮罩不关闭，取消
+  按钮、Esc 或 Android 返回键等同取消。
 - 空列表使用随项目提供的简笔画空白台历 SVG，并显示“还没有活动，点右下角的加号，
   添加一张通知截图”。应用图标源自同一组台历撕页素材，主色 `#565C78`，不含文字；
   自适应图标由 `res/drawable/ic_launcher_foreground.xml`（前景，108 画布）、
@@ -430,6 +435,88 @@ Animations API 驱动：若用户在进入动画尚未完成时返回，会先�
 - 网页首次配置 API Key 的弹窗宽度不超过视口减 32px，高度不超过动态视口；输入框
   字号固定为至少 16px，防止移动浏览器聚焦时自动放大整个页面。
 
+### 统一弹层与选择器（v1.15）
+
+- `overlays.js` 提供 `BottomSheet` 与 `Dialog` 两个基础组件；设置、学期设置、日期、
+  时间和选项列表使用前者，确认、提示与网页 API 配置使用后者，不再各自实现弹层。
+- BottomSheet 顶部把手支持跟手下拉：位移超过自身高度 30%，或最近 90ms 的向下
+  速度超过 0.5px/ms 时关闭，否则弹回；点击遮罩关闭。Dialog 遮罩不关闭。
+  Android 返回键与 Esc 只取消最上层，不影响下层菜单、当前筛选或页面。
+- 弹层统一由栈管理背景滚动锁定、背景 `inert`、焦点移入、Tab 循环与关闭后焦点恢复。
+  嵌套日期选择器关闭后返回学期设置，最后一层关闭后恢复原滚动位置。
+- 圆角、内边距、标题字号、按钮高度、间距与圆角通过 `--modal-*` 变量统一。
+  次要操作在左、主要操作在右；危险确认采用 `--urgent-text` 实心底色。
+  底部表面通过语义变量派生半透明表面并使用 16px 模糊，居中 Dialog 保持实心。
+  进出场使用现有弹簧曲线 340ms，减少动态效果时立即切换。
+- `pickers.js` 的日期选择器复用 `CalendarGrid`，支持单日与区间。区间第一次选起点、
+  第二次选终点，逆序自动交换；端点实心圆、中间浅色条带连接。提供今天、明天、
+  本周六快捷入口，取消不写回、确定才写回。
+- 时间选择器采用两列 CSS scroll-snap 滚轮，小时 00–23、分钟 00–59，中心横带与
+  边缘渐隐。优先使用 scrollend，防抖兜底；确认时读取最终滚动位置，点击行可直达。
+  “时间待定”保留日期并清除时间，不恢复旧时间。未选择日期时先选择日期。
+- 活动类型、状态使用选项 BottomSheet，当前项显示勾号，点击后立即写回并关闭。
+  开始、结束、报名截止与开学日期均不再使用原生日期/时间输入框；表单关闭浏览器
+  原生校验提示，继续使用现有应用内校验和中文错误提示。
+- Event 字段及存储接口不变，原生图片选择、系统日历新建页、键盘和分享面板保留。
+  所有颜色使用既有语义变量，覆盖六个主题的浅色与深色版本，不新增依赖。
+
+### 添加来源与批量识别（v1.17）
+
+- 系统分享：主 Activity 接收 SEND 的 image/*、text/plain，以及 SEND_MULTIPLE 的
+  image/*。自建 NoticeInput 插件在 load 处理冷启动、handleOnNewIntent 处理后台唤起，
+  将 sharedNotice 事件保留至 WebView 监听就绪。按事件 ID 去重，前端串行接收分享，
+  自动打开添加页并识别；显式发起系统分享视为用户选择识别该内容。
+- 剪贴板：使用官方 @capacitor/clipboard，仅在原生前台恢复或首次进入添加页读取；
+  超过 15 个字符且匹配日期、时间或地点特征时显示“识别 / 忽略”提示，不自动上传。
+  忽略内容的 SHA-256 摘要存入 Preferences，不持久保存剪贴板原文；同内容不再提示。
+- 最近截图：自建 NoticeInput 插件使用 MediaStore 的 BUCKET_DISPLAY_NAME 匹配
+  Screenshots（忽略大小写）、截屏、截图，不写死目录路径。查询最近五分钟的截图，
+  按拍摄时间（缺失时使用入库时间）降序最多显示 8 张，缩略图在工作线程本地生成。
+  点击后才加载该 URI 的识别图，降采样后通过现有 compressImage / extractEvents 流程。
+- 首次进入添加页按版本申请 READ_MEDIA_IMAGES（Android 13+）或
+  READ_EXTERNAL_STORAGE（Android 12 及以下）；Android 14+ 同时处理部分照片授权。
+  拒绝后隐藏区域并记住已询问状态，不再自动弹权限框；系统设置重新授权后自动恢复。
+  部分授权只查询有权访问的图片，无截图时隐藏区域，不影响普通系统选图与分享。
+- 选图支持 multiple，分享的多图与普通多选共用顺序队列。显示“第 N / M 张”，
+  结果合并到已有 pending_events，全部处理后继续逐条保存或放弃。失败项单独保留
+  重试入口；取消停止队列并保留成功草稿，晚到结果不进入新的识别队列。
+- 添加页固定补充隐私说明：“读取剪贴板和截图仅在你点击识别后发送至智谱 AI。”
+  网页版保持原有选图与文字入口并支持多选；原生专属入口在网页安全跳过。
+- Event 数据格式、extractEvents 与存储模块接口不变；新增依赖仅官方 Clipboard，
+  不使用第三方分享插件。
+
+### 去办入口与本地二维码（v1.18）
+
+- 识别提示词要求提取通知上明确写出的报名、问卷和详情链接及简短按钮文字。
+  输入文字、剪贴板、分享文字共用 http/https 正则兜底；按规范化链接去重。
+  同张通知有多个活动时，兜底入口附到各待确认项，表单提示用户核对归属。
+- 图片先以原图在本地 jsQR Worker 解码；整图未命中时使用重叠分块再试。
+  命中后从原图裁剪二维码及周围留白，已定位的二维码区域在上传识别图中遮除。
+  解码值与裁剪图不加入 AI 请求，处理超时停止 Worker，不影响普通识别。
+  未定位的二维码仍可能存在于通知图中，但不交给模型解码。
+- 普通 http/https 二维码产生“去报名”入口，与模型链接合并去重；微信专属协议或
+  域名产生“微信二维码”入口。jsQR 只支持标准二维码，不支持微信专用小程序码；
+  表单提供“添加微信二维码”及原图手动圈选，保存裁剪图，不进行云端解码。
+- 正式活动卡片最多显示一个去办按钮，其他入口在共用编辑表单中显示；待确认项
+  也使用该表单，可添加、修改、删除链接，随现有保存流程持久化。
+  按钮点击不触发卡片导航或侧滑；管理模式不显示去办按钮。
+- url 在 Android 使用 ACTION_VIEW 交给系统；只允许 http/https，拒绝含登录凭据的
+  URL 与其他协议。微信入口使用统一 Dialog：“该二维码需在微信中扫描”，提供
+  “关闭 / 保存图片”。MediaStore 写入 Pictures/CampusAction；Android 9 及以下
+  仅保存时申请写入权限，新版本无需额外写权限。网页下载图片作为安全降级。
+- 本轮唯一新增依赖为 jsQR，Event 仅新增可选 actions 字段，不调整原有接口。
+
+### 去办布局与编辑退出保护（v1.19）
+
+- 列表去办按钮置于卡片底部，相对整卡居中，高度 34px，宽度 65% 且最大 260px；
+  链接/二维码添加工具采用同一行网格，文字水平、垂直居中，二维码按钮触发原生选图。
+- 正式编辑表单记录规范化保存快照，包含 actions 与原有表单字段；切换全天只更新
+  当前草稿，不提前落库。内容恢复原值且没有其他变化时，不弹退出提示。
+- 所有路由退出统一检测修改：页面返回、Android 返回键、浏览器 hash 返回均提供
+  “继续编辑 / 不保存 / 保存”。返回键关闭 Dialog 相当于继续编辑；保存成功才退出，
+  校验或保存失败保留表单。主动保存/加入日历保存后更新快照，删除不重复询问保存。
+  既有待确认队列与识别流程不变，不新增 Event 字段或依赖。
+
 ## 6. 本地网页版
 
 本地网页版与 Android App 共用 `main.js`、`extract.js`、`store.js`、
@@ -493,3 +580,24 @@ Animations API 驱动：若用户在进入动画尚未完成时返回，会先�
 |---|---|---|---|---|---|
 
 结论只看数据：若自带功能在准确率和步数上与 demo 相当，说明方案一的核心价值已被系统覆盖。
+
+## 9. Android 正式发布（v2.0.0）
+
+- 应用 ID / namespace / Java package 统一为 `com.itp.notice`；主 Activity 和
+  CalendarIntent、SystemBars、NoticeInput 三个原生插件位于 java/com/itp/notice。
+  Manifest 主 Activity 使用 `${applicationId}.MainActivity`，FileProvider 继续使用
+  `${applicationId}.fileprovider`；分享 intent-filter 和插件功能保持不变。
+- versionName 为 2.0.0，versionCode 为 2。package.json 的版本同步为 2.0.0，
+  设置菜单新增“关于落笺”，从该文件读取版本号。后续发布同步修改 Android 与网页版本。
+- 密钥库 android/release.keystore，别名 luojian，RSA 2048，有效期 10000 天，
+  DN 为 CN=Luojian, O=ITP。随机生成 20 位密码，库密码和密钥密码相同；密码只保存在
+  android/keystore.properties，文件权限 600，不在仓库或文档中记录密码明文。
+- Gradle 必须读取上述配置，缺失配置、必填字段或密钥库时明确报错，不回退到调试签名。
+  release 使用 signingConfigs.release，保持 minifyEnabled false。签名文件、密钥库、
+  项目根 release/ 均被 Git 忽略，未被跟踪。
+- 构建：npm run build → npx cap sync android → android/gradlew assembleRelease。
+  输出 android/app/build/outputs/apk/release/app-release.apk；交付复制为
+  release/luojian-v2.0.0.apk，用 apksigner verify --print-certs 校验证书。
+- 新 ID 与旧 Demo 是独立安装应用，不自动迁移旧数据。正式版后续覆盖升级必须使用
+  同一密钥并提高 versionCode；请加密备份密钥库和密码配置，禁止重新生成或公开。
+  网页 ZIP 未重新生成，Event 格式、识别和日历接口保持不变。
