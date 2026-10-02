@@ -868,6 +868,7 @@ button:where(:not(:disabled))::after,
 .fab::after { background: color-mix(in srgb, var(--on-accent) 14%, transparent); }
 /* 卡片类只缩放，不铺底色（.today-calendar 不是 button，其 ::after 是撕纸边，天然不受影响） */
 .event-card::after,
+.today-calendar__summary::after,
 .theme-option::after { display: none; }
 button.is-pressed::after,
 [role="button"].is-pressed::after { opacity: 1; transition-duration: 60ms; }
@@ -880,13 +881,13 @@ button.is-pressed::after,
     padding 250ms ease-out, border-width 250ms ease-out,
     scale 420ms var(--motion-press-release);
 }
-.today-calendar,
+.today-calendar__summary,
 .theme-option {
   scale: 1;
   transition: scale 420ms var(--motion-press-release);
 }
 .event-card.is-pressed,
-.today-calendar.is-pressed,
+.today-calendar__summary.is-pressed,
 .theme-option.is-pressed { scale: .965; transition: scale 90ms ease-out; }
 
 .is-loading, [aria-busy="true"] { pointer-events: none; }
@@ -919,7 +920,7 @@ button.is-pressed::after,
      这里必须重述 .event-card 的过渡属性，以压过前面 Material 层的 transition 简写。 */
   .event-card { transition-property: opacity, max-height, padding, border-width; }
   .event-card.is-pressed,
-  .today-calendar.is-pressed,
+  .today-calendar__summary.is-pressed,
   .theme-option.is-pressed { scale: 1; }
   /* 减少动画时模式滑块直接落位，不做滑动 */
   .appearance-mode__thumb { transition: none; }
@@ -939,7 +940,11 @@ button.is-pressed::after,
 .today-calendar { display: block; }
 .today-calendar__summary { display: grid; grid-template-columns: 108px 1fr; cursor: pointer; outline-offset: 4px; }
 .term-week-button { width: fit-content; margin-top: 4px; padding: 5px 9px; border: 1px solid var(--today-text); border-radius: var(--radius-pill); color: var(--today-text); background: transparent; font-size: 11px; font-weight: 600; }
-.month-calendar-wrap { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 300ms var(--motion-spring-soft), opacity 200ms var(--motion-direct); }
+.month-calendar-wrap {
+  --motion-calendar-expansion: linear(0, .02 8%, .1 18%, .28 32%, .55 48%, .8 64%, .95 80%, 1.005 92%, 1);
+  display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows 520ms var(--motion-calendar-expansion), opacity 260ms ease-out;
+}
 .month-calendar-wrap.is-open { grid-template-rows: 1fr; opacity: 1; }
 .month-calendar-inner { min-height: 0; overflow: hidden; }
 .month-calendar { padding: 8px 12px 20px; color: var(--text); background: var(--surface); touch-action: none; }
@@ -959,6 +964,9 @@ button.is-pressed::after,
 .calendar-day__dot[hidden] { display: block; visibility: hidden; }
 .calendar-day__dot--urgent { background: var(--urgent-text); }
 .date-filter { justify-self: start; padding: 10px 14px; border: 0; border-radius: var(--radius-pill); background: var(--surface-2); color: var(--text); font-size: 13px; }
+.list-page--date-filtered .today-calendar { margin-bottom: 12px; }
+.activity-list--filtered { align-content: start; gap: 6px; }
+.activity-list--filtered > .event-list { margin: 0; }
 .ended-summary i, .ended-summary[aria-expanded="true"] i { transform: none; font-size: 18px; }
 @media (prefers-reduced-motion: reduce) {
   .month-calendar-wrap { transition-duration: 150ms; transition-timing-function: ease-out; }

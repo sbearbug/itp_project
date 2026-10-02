@@ -651,7 +651,7 @@ function setupSettingsCloseGesture() {
 // 按下反馈的唯一入口：指针与键盘共用一套状态。
 // - 卡片类（活动卡片 / 今日台历 / 主题色块）加 .is-pressed 后由 CSS 做缩放回弹；
 // - 其余可点元素加同一个类后由 CSS 铺状态底色。
-const PRESS_CARD_SELECTOR = '.event-card, .today-calendar, .theme-option';
+const PRESS_CARD_SELECTOR = '.event-card, .today-calendar__summary, .theme-option';
 const PRESS_BACKGROUND_SELECTOR = 'button:not(:disabled), [role="button"]';
 // 列表里的卡片在按下约 60ms 后才进入按下态；这段时间内一旦开始滚动就整轮放弃，
 // 避免滑动列表时卡片闪一下。
@@ -667,7 +667,8 @@ const PRESS_DEPTH_HOLD = PRESS_DEPTH_DURATION + 16;
 
 function pressTargetFor(node) {
   if (!(node instanceof Element)) return null;
-  return node.closest(PRESS_CARD_SELECTOR) || node.closest(PRESS_BACKGROUND_SELECTOR);
+  // 优先命中最近的控件，不能让台历父容器吞掉内部按钮的反馈。
+  return node.closest(`${PRESS_CARD_SELECTOR}, ${PRESS_BACKGROUND_SELECTOR}`);
 }
 
 function setupPressFeedback() {
@@ -1868,7 +1869,7 @@ async function renderListPage() {
   // .fab / .bulk-toolbar / #toast-root 都是 position: fixed，必须渲染在 .page 之外。
   // .page 带 will-change: transform，会为 fixed 后代创建包含块，使它们相对整页而不是
   // 视口定位——列表一长，加号就落到文档底部，看起来像凭空消失。
-  app.innerHTML = `<main class="${pageClass(`list-page ${ui.selectionMode ? 'list-page--manage' : ''}`)}">
+  app.innerHTML = `<main class="${pageClass(`list-page ${ui.selectionMode ? 'list-page--manage' : ''} ${ui.selectedDate ? 'list-page--date-filtered' : ''}`)}">
     <header class="compact-header">
       <h1>活动<span class="compact-header__count">${events.length} 项</span></h1>
       <div class="compact-header__actions">
@@ -1882,7 +1883,7 @@ async function renderListPage() {
       <span>有 ${pendingEvents.length} 个活动等待确认</span><b>继续 →</b>
     </button>` : ''}
 
-    <section class="activity-list">
+    <section class="activity-list ${ui.selectedDate ? 'activity-list--filtered' : ''}">
       ${filtered ? `<button class="date-filter" id="clear-date-filter" type="button">${formatDayLabel(parseDateKey(ui.selectedDate), now)} · 清除</button>
         ${filtered.length ? `<div class="event-list">${filtered.map((event) => listCard(event)).join('')}</div>` : '<div class="empty-state"><p>这天没有活动</p></div>'}` : upcoming.length
         ? activityGroupsMarkup(upcoming, now)
