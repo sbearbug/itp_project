@@ -19,3 +19,5 @@ keystore.properties
 *.keystore
 android/.signing-password
 /release/
+# 交接文档只保留在本地，不进仓库
+DEEPSEEK.md
